@@ -35,7 +35,7 @@
 
 **Resultado após a correção.** A amostra entrega um evento final com `19/144/163` e grava uma única linha com esses valores, incluindo detalhes de cache e raciocínio. O agregado diário registra a mesma entrada e saída. Estimativas ficam marcadas no JSON já armazenado no SQLite. Um evento terminal com zero explícito e um JSON com zero explícito são contabilizados. Encerramentos sem consumo conhecido seguem a política de finalização. A homologação real continua pendente.
 
-**Custo.** A [fórmula](../../open-sse/providers/pricing.js#L480) soma o custo de toda a saída e mais uma parcela de raciocínio. Como os 128 tokens de raciocínio já compõem os 144 de saída na amostra OpenAI, há risco de contagem duplicada no custo exibido. Confirmar a semântica de cada provedor antes de alterar a fórmula.
+**Custo estimado.** A fórmula anterior somava o custo de toda a saída e mais uma parcela de raciocínio. Os 128 tokens de raciocínio já compõem os 144 de saída na amostra OpenAI. A [correção implementada](../../open-sse/providers/pricing.js#L481) reparte a saída entre raciocínio e demais tokens. Registros e agregados previamente gravados mantêm seus valores históricos. Detalhamentos negativos ou incompatíveis com os totais deixam o custo indisponível. A validação usou tarifas sintéticas e conferiu o histórico e os agregados em SQLite temporário.
 
 **Aceite.** Uso real tem precedência. Com `include_usage`, o cliente recebe um único evento final de uso real quando disponível. Sem a opção, a contabilização interna pode ocorrer sem mudar o contrato do cliente. Se o uso real faltar até o término, manter a origem identificável na persistência. Cobrir interrupção, uma única linha por tentativa contabilizável e agregados consistentes.
 

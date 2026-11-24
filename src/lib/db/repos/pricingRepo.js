@@ -20,27 +20,13 @@ export async function getPricing() {
   if (cache.value && cache.expiresAt > now) return cache.value;
 
   const userPricing = await getUserPricing();
-  const { PROVIDER_PRICING } = await import("open-sse/providers/pricing.js");
-  const merged = {};
-
-  for (const [provider, models] of Object.entries(PROVIDER_PRICING)) {
-    merged[provider] = { ...models };
-    if (userPricing[provider]) {
-      for (const [model, pricing] of Object.entries(userPricing[provider])) {
-        merged[provider][model] = merged[provider][model]
-          ? { ...merged[provider][model], ...pricing }
-          : pricing;
-      }
-    }
-  }
+  const { PROVIDER_PRICING, getPricingForModel: resolveConst } = await import("open-sse/providers/pricing.js");
+  const merged = { ...PROVIDER_PRICING };
 
   for (const [provider, models] of Object.entries(userPricing)) {
-    if (!merged[provider]) {
-      merged[provider] = { ...models };
-    } else {
-      for (const [model, pricing] of Object.entries(models)) {
-        if (!merged[provider][model]) merged[provider][model] = pricing;
-      }
+    merged[provider] = { ...merged[provider] };
+    for (const [model, pricing] of Object.entries(models)) {
+      merged[provider][model] = { ...resolveConst(provider, model), ...pricing };
     }
   }
 
@@ -51,9 +37,10 @@ export async function getPricing() {
 export async function getPricingForModel(provider, model) {
   if (!model) return null;
   const userPricing = await getUserPricing();
-  if (provider && userPricing[provider]?.[model]) return userPricing[provider][model];
   const { getPricingForModel: resolveConst } = await import("open-sse/providers/pricing.js");
-  return resolveConst(provider, model);
+  const defaults = resolveConst(provider, model);
+  const overrides = userPricing[provider]?.[model];
+  return overrides ? { ...defaults, ...overrides } : defaults;
 }
 
 // Atomic merge inside transaction (per-provider read-modify-write)

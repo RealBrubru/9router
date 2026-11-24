@@ -20,13 +20,13 @@ const fmtRequests = (n) => String(n || 0);
 const VIEW_MODES = [
   { value: "tokens", label: "Tokens" },
   { value: "requests", label: "Requests" },
-  { value: "cost", label: "Cost" },
+  { value: "cost", label: "Est. Cost" },
 ];
 
 const VIEW_CONFIG = {
   tokens:   { dataKey: "tokens",   color: "#6366f1", gradId: "gradTokens",   formatter: fmtCompactTokens, label: "Tokens" },
   requests: { dataKey: "requests", color: "#14b8a6", gradId: "gradRequests", formatter: fmtRequests, label: "Requests" },
-  cost:     { dataKey: "cost",     color: "#f59e0b", gradId: "gradCost",     formatter: fmtCost,     label: "Cost" },
+  cost:     { dataKey: "cost",     color: "#f59e0b", gradId: "gradCost",     formatter: fmtCost,     label: "Est. Cost" },
 };
 
 export default function UsageChart({ period = "7d" }) {
@@ -54,7 +54,15 @@ export default function UsageChart({ period = "7d" }) {
   }, [fetchData]);
 
   const cfg = VIEW_CONFIG[viewMode];
-  const hasData = data.some((d) => (d[cfg.dataKey] || 0) > 0);
+  const hasUnknownCost = viewMode === "cost" && data.some((point) => point.unknownCostRequests > 0);
+  const plotted = viewMode === "cost"
+    ? data.map((point) => point.unknownCostRequests > 0 && point.unknownCostRequests === point.requests
+      ? { ...point, cost: null }
+      : point)
+    : data;
+  const hasData = plotted.some((point) => viewMode === "cost"
+    ? point.requests > 0 && point.cost !== null
+    : (point[cfg.dataKey] || 0) > 0);
 
   return (
     <Card className="flex min-w-0 flex-col gap-3 p-3 sm:p-4">
@@ -76,10 +84,10 @@ export default function UsageChart({ period = "7d" }) {
       {loading ? (
         <div className="h-48 flex items-center justify-center text-text-muted text-sm">Loading...</div>
       ) : !hasData ? (
-        <div className="h-48 flex items-center justify-center text-text-muted text-sm">No data for this period</div>
+        <div className="h-48 flex items-center justify-center text-text-muted text-sm">{hasUnknownCost ? "Estimated cost unavailable for this period" : "No data for this period"}</div>
       ) : (
         <ResponsiveContainer width="100%" height={220}>
-          <AreaChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+          <AreaChart data={plotted} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="gradTokens" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#6366f1" stopOpacity={0.25} />
@@ -116,7 +124,10 @@ export default function UsageChart({ period = "7d" }) {
                 borderRadius: "8px",
                 fontSize: "12px",
               }}
-              formatter={(value) => [cfg.formatter(value), cfg.label]}
+              formatter={(value, _name, entry) => [
+                cfg.formatter(value),
+                viewMode === "cost" && entry?.payload?.unknownCostRequests ? "Partial est. cost" : cfg.label,
+              ]}
             />
             <Area
               type="monotone"

@@ -2,6 +2,7 @@
  * Token Usage Tracking - Extract, normalize, estimate and log token usage
  */
 
+import { toOpenAIUsage } from "../translator/concerns/usage.js";
 import { FORMATS } from "../translator/formats.js";
 
 // Legacy per-chunk usage console line; off by default (superseded by "📊 done")
@@ -135,12 +136,12 @@ export function canonicalizeUsage(usage) {
   const completion = num(usage.completion_tokens ?? usage.output_tokens);
   const promptDetails = usage.prompt_tokens_details ?? usage.input_tokens_details;
   const completionDetails = usage.completion_tokens_details ?? usage.output_tokens_details;
-  const reasoning = num(usage.reasoning_tokens ?? completionDetails?.reasoning_tokens);
+  const reasoning = num(usage.reasoning_tokens ?? completionDetails?.reasoning_tokens ?? completionDetails?.thinking_tokens);
   // Fall back to the nested prompt_tokens_details.cache_creation_tokens shape
   // (buildUsage()'s OpenAI-forwarding format) when the top-level field is
   // absent, so callers that pass a buildUsage() object through don't silently
   // drop cache_creation.
-  const cacheCreation = num(usage.cache_creation_input_tokens ?? promptDetails?.cache_creation_tokens);
+  const cacheCreation = num(usage.cache_creation_input_tokens ?? promptDetails?.cache_creation_tokens ?? promptDetails?.cache_write_tokens);
 
   if (usage.estimated === true) {
     const prompt = num(usage.prompt_tokens ?? usage.input_tokens);
@@ -245,7 +246,8 @@ export function extractUsage(chunk) {
       prompt_tokens: chunk.usage.input_tokens || 0,
       completion_tokens: chunk.usage.output_tokens || 0,
       cache_read_input_tokens: chunk.usage.cache_read_input_tokens,
-      cache_creation_input_tokens: chunk.usage.cache_creation_input_tokens
+      cache_creation_input_tokens: chunk.usage.cache_creation_input_tokens,
+      completion_tokens_details: chunk.usage.output_tokens_details
     });
   }
 
@@ -279,13 +281,16 @@ export function extractUsage(chunk) {
   // Gemini format (Antigravity)
   // Antigravity wraps usageMetadata inside response: { response: { usageMetadata: {...} } }
   const usageMeta = chunk.usageMetadata || chunk.response?.usageMetadata;
-  if (usageMeta && typeof usageMeta === "object") {
+  if (usageMeta && typeof usageMeta === "object" && [
+    "promptTokenCount", "candidatesTokenCount", "totalTokenCount", "thoughtsTokenCount", "cachedContentTokenCount", "toolUsePromptTokenCount",
+  ].some((key) => Number.isFinite(usageMeta[key]))) {
+    // Gemini's native candidate count excludes thoughts. Normalize before
+    // combining with Chat Completions or calculating a cost.
+    const usage = toOpenAIUsage(usageMeta, "gemini");
     return normalizeUsage({
-      prompt_tokens: usageMeta.promptTokenCount || 0,
-      completion_tokens: usageMeta.candidatesTokenCount || 0,
-      total_tokens: usageMeta.totalTokenCount,
+      ...usage,
       cached_tokens: usageMeta.cachedContentTokenCount,
-      reasoning_tokens: usageMeta.thoughtsTokenCount
+      reasoning_tokens: usageMeta.thoughtsTokenCount,
     });
   }
 

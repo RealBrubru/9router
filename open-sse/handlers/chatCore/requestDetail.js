@@ -51,14 +51,7 @@ export function extractUsageFromResponse(responseBody) {
 
   // Gemini format. Antigravity / gemini-cli wrap the payload in { response: {...} }.
   const usageMetadata = responseBody.usageMetadata || responseBody.response?.usageMetadata;
-  if (usageMetadata) {
-    return {
-      prompt_tokens: usageMetadata.promptTokenCount || 0,
-      completion_tokens: usageMetadata.candidatesTokenCount || 0,
-      cached_tokens: usageMetadata.cachedContentTokenCount || 0,
-      reasoning_tokens: usageMetadata.thoughtsTokenCount || 0
-    };
-  }
+  if (usageMetadata) return extractUsage(responseBody);
 
   // Ollama format: prompt_eval_count/eval_count at top level (not nested under usage).
   // prompt_eval_cached_count is a cache-read subset of prompt_eval_count (cache-INCLUSIVE).

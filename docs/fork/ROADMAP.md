@@ -8,11 +8,11 @@ Ordem aprovada para o início do fork. O proprietário pode revisar as prioridad
 | 1. Diagnóstico técnico inicial | Concluída | Fluxo de chat e achados registrados em [BUGS.md](BUGS.md), com escopo de validação por evidência |
 | 2. Documentação e organização | Concluída | Onboarding, instruções de desenvolvimento e fluxo de branches |
 | 3. Contrato JSON/SSE e botão Test | Implementada | 120 testes aprovados em 11 arquivos, incluindo 14 novos cenários. O falso negativo do botão Test foi resolvido com upstream simulado. A validação na imagem Docker fica na etapa 5. |
-| 4. Contabilização, persistência e custo | Em andamento | Uso real, estimativas e Analytics validados em SQLite temporário. A revisão do custo estimado é a próxima entrega da etapa. |
-| 5. Imagem Docker ARM64 | Planejada | Construir e homologar imagem própria em ambiente isolado |
+| 4. Contabilização, persistência e custo | Concluída em testes locais | Uso e custo estimado validados em SQLite temporário. O Dashboard distingue total parcial e custo indisponível. |
+| 5. Imagem Docker ARM64 | Em andamento | Construir e homologar imagem própria em ambiente isolado |
 | 6. Segregação de contas | Planejada | Restringir a elegibilidade de conexões por chave e cobrir retries e combos |
-| 7. Daily Token Budget | Planejada | Especificar regras por provedor e implementar controle preventivo |
+| 7. Smart Budget & Quota Management | Planejada | Especificar franquias, orçamentos, roteamento elegível e acompanhamento de custos |
 | 8. Provedores e contas | Planejada | Configurar conexões autorizadas e validar elegibilidade e fallback |
 | 9. Hermes | Planejada | Integrar e validar com credenciais e política próprias |
 
-A etapa 7 precisa definir franquia por identidade da conta e grupo de modelos, janela e reset configuráveis, margem de segurança, política de cache e raciocínio, reserva concorrente, persistência, liquidação por uso real e fallback autorizado. A interface deve mostrar uso e reservas. A conciliação de consumo externo depende da granularidade, do atraso e das permissões das fontes oficiais. Limites, modelos elegíveis e regras de cada provedor serão verificados nessa etapa. Consulte a [proposta técnica](DECISIONS.md).
+A etapa 7 amplia o Daily Token Budget. Começa pela especificação de unidades, janelas, fontes dos dados e limites por conexão. A proteção preventiva e os relatórios dependem da conciliação das fontes e da política de elegibilidade. Consulte a [direção futura](DECISIONS.md#smart-budget--quota-management).

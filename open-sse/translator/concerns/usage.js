@@ -26,7 +26,7 @@ const USAGE_EXTRACTORS = {
   },
   gemini(raw) {
     const cached = n(raw.cachedContentTokenCount);
-    const prompt = n(raw.promptTokenCount);
+    const prompt = n(raw.promptTokenCount) + n(raw.toolUsePromptTokenCount);
     const thoughts = n(raw.thoughtsTokenCount);
     const total = n(raw.totalTokenCount);
     let candidates = n(raw.candidatesTokenCount);

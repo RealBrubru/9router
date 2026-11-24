@@ -1,3 +1,5 @@
+import { canonicalizeUsage } from "../utils/usageTracking.js";
+
 // Pricing rates for AI models — all rates in $/1M tokens
 //
 // Fallback order (first match wins):
@@ -467,45 +469,43 @@ export function getDefaultPricing() {
  * @returns {string}
  */
 export function formatCost(cost) {
-  if (cost === null || cost === undefined || isNaN(cost)) return "$0.00";
+  if (!Number.isFinite(cost)) return "—";
   return `$${cost.toFixed(2)}`;
 }
 
 /**
- * Calculate cost from tokens and pricing
- * @param {object} tokens
- * @param {object} pricing
- * @returns {number} cost in dollars
+ * Return estimated USD for known usage at known rates, or null if unavailable.
+ * Canonical input includes cache read/write; canonical output includes reasoning.
  */
 export function calculateCostFromTokens(tokens, pricing) {
-  if (!tokens || !pricing) return 0;
+  const usage = canonicalizeUsage(tokens);
+  if (!usage || !pricing) return null;
 
-  let cost = 0;
+  const cached = usage.cached_tokens ?? 0;
+  const cacheCreation = usage.cache_creation_input_tokens ?? 0;
+  const details = tokens.completion_tokens_details ?? tokens.output_tokens_details;
+  const reasoning = usage.estimated ? 0 : (tokens.reasoning_tokens ?? details?.reasoning_tokens ?? details?.thinking_tokens ?? 0);
+  const isCount = (count) => Number.isSafeInteger(count) && count >= 0;
+  const reportedInput = tokens.prompt_tokens ?? tokens.input_tokens ?? 0;
+  if (![reportedInput, usage.prompt_tokens, usage.completion_tokens, cached, cacheCreation, reasoning].every(isCount) ||
+      cached + cacheCreation > usage.prompt_tokens || reasoning > usage.completion_tokens) return null;
 
-  const inputTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
-  const cachedTokens = tokens.cached_tokens || tokens.cache_read_input_tokens || 0;
-  const cacheCreationTokens = tokens.cache_creation_input_tokens || 0;
-  // prompt_tokens is cache-inclusive (see canonicalizeUsage): cached + cache_creation
-  // are subsets, so subtract both to avoid charging them at the full input rate.
-  const nonCachedInput = Math.max(0, inputTokens - cachedTokens - cacheCreationTokens);
+  const categories = [
+    [usage.prompt_tokens - cached - cacheCreation, pricing.input],
+    [cached, pricing.cached ?? pricing.input],
+    [cacheCreation, pricing.cache_creation ?? pricing.input],
+    [usage.completion_tokens - reasoning, pricing.output],
+    [reasoning, pricing.reasoning ?? pricing.output],
+  ];
 
-  cost += nonCachedInput * (pricing.input / 1000000);
+  const isRate = (rate) => Number.isFinite(rate) && rate >= 0;
+  if (!categories.some(([, rate]) => isRate(rate))) return null;
 
-  if (cachedTokens > 0) {
-    cost += cachedTokens * ((pricing.cached || pricing.input) / 1000000);
+  let costPerMillion = 0;
+  for (const [count, rate] of categories) {
+    if (count === 0) continue;
+    if (!isRate(rate)) return null;
+    costPerMillion += count * rate;
   }
-
-  const outputTokens = tokens.completion_tokens || tokens.output_tokens || 0;
-  cost += outputTokens * (pricing.output / 1000000);
-
-  const reasoningTokens = tokens.reasoning_tokens || 0;
-  if (reasoningTokens > 0) {
-    cost += reasoningTokens * ((pricing.reasoning || pricing.output) / 1000000);
-  }
-
-  if (cacheCreationTokens > 0) {
-    cost += cacheCreationTokens * ((pricing.cache_creation || pricing.input) / 1000000);
-  }
-
-  return cost;
+  return Number.isFinite(costPerMillion) ? costPerMillion / 1_000_000 : null;
 }

@@ -29,7 +29,7 @@ SortIcon.propTypes = {
 };
 
 /**
- * Render 3 token or cost cells based on viewMode
+ * Render token counts or the estimated cost subtotal
  */
 function ValueCells({ item, viewMode, isSummary = false }) {
   if (viewMode === "tokens") {
@@ -50,21 +50,13 @@ function ValueCells({ item, viewMode, isSummary = false }) {
       </>
     );
   }
+  const unknown = item.unknownCostRequests || 0;
+  const subtotal = unknown > 0 && unknown === item.requests ? "—" : fmtCost(item.cost);
   return (
-    <>
-      <td className="px-6 py-3 text-right text-text-muted">
-        {isSummary && item.inputCost === undefined ? "—" : fmtCost(item.inputCost)}
-      </td>
-      <td className="px-6 py-3 text-right text-text-muted">
-        {item.cachedCost ? fmtCost(item.cachedCost) : "—"}
-      </td>
-      <td className="px-6 py-3 text-right text-text-muted">
-        {isSummary && item.outputCost === undefined ? "—" : fmtCost(item.outputCost)}
-      </td>
-      <td className="px-6 py-3 text-right font-medium text-warning">
-        {fmtCost(item.totalCost || item.cost)}
-      </td>
-    </>
+    <td className="px-6 py-3 text-right font-medium text-warning"
+      title={unknown ? `${fmt(unknown)} requests without a cost estimate` : undefined}>
+      {subtotal}{unknown > 0 && subtotal !== "—" ? " (partial)" : ""}
+    </td>
   );
 }
 
@@ -144,12 +136,7 @@ export default function UsageTable({
         { field: "totalTokens", label: "Total Tokens" },
       ];
     }
-    return [
-      { field: "promptTokens", label: "Input Cost" },
-      { field: "cachedCost", label: "Cached Cost" },
-      { field: "completionTokens", label: "Output Cost" },
-      { field: "cost", label: "Total Cost" },
-    ];
+    return [{ field: "cost", label: "Estimated Cost" }];
   }, [viewMode]);
 
   const totalColSpan = columns.length + valueColumns.length;
