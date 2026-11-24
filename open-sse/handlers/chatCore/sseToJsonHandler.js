@@ -7,6 +7,8 @@ import { openAICompletionToClaudeMessage } from "../../translator/concerns/claud
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
+import { canonicalizeUsage } from "../../utils/usageTracking.js";
+import { buildUsage } from "../../translator/concerns/usage.js";
 import { extractReasoningText } from "../../translator/concerns/reasoning.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
@@ -209,23 +211,19 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       const jsonResponse = await convertResponsesStreamToJson(providerResponse.body);
       if (onRequestSuccess) await onRequestSuccess();
 
-      const usage = jsonResponse.usage || {};
+      const usage = jsonResponse.usage;
+      const tokens = canonicalizeUsage(usage);
       appendLog({ tokens: usage, status: "200 OK" });
       saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
       if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
-      // Same cache-inclusive total for the recorded detail, so the DB and the
-      // client-facing usage can never disagree.
-      const inTokensForLog = (usage.input_tokens || 0)
-        + (usage.cache_read_input_tokens || usage.cached_tokens || 0)
-        + (usage.cache_creation_input_tokens || 0);
       const { msgItem, textContent } = pickAssistantMessageForChatCompletion(jsonResponse.output);
       const totalLatency = Date.now() - requestStartTime;
 
       saveRequestDetail(buildRequestDetail({
         ...ctx,
         latency: { ttft: totalLatency, total: totalLatency },
-        tokens: { prompt_tokens: inTokensForLog, completion_tokens: usage.output_tokens || 0 },
+        tokens: tokens || {},
         response: { content: textContent, thinking: null, finish_reason: jsonResponse.status || "unknown" },
         status: "success"
       }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
@@ -235,21 +233,21 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
         return { success: true, response: new Response(JSON.stringify(restoreToolNames(jsonResponse, toolNameMap)), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
       }
 
-      // Build client-format response.
-      // input_tokens EXCLUDES cached tokens on cache-capable upstreams, so summing
-      // only input+output under-reports prompt_tokens — measured: 2012 reported
-      // where the real prompt was ~5344 with 5332 served from cache. Fold the cache
-      // counters in, and keep them visible in prompt_tokens_details so a client can
-      // tell a cache hit from a small prompt.
-      const cacheRead = usage.cache_read_input_tokens || usage.cached_tokens || 0;
-      const cacheCreate = usage.cache_creation_input_tokens || 0;
-      const inTokens = (usage.input_tokens || 0) + cacheRead + cacheCreate;
-      const outTokens = usage.output_tokens || 0;
-      const cacheDetails = (cacheRead > 0 || cacheCreate > 0)
-        ? { prompt_tokens_details: {
-              ...(cacheRead > 0 ? { cached_tokens: cacheRead } : {}),
-              ...(cacheCreate > 0 ? { cache_creation_tokens: cacheCreate } : {}) } }
-        : {};
+      const chatUsage = tokens && buildUsage({
+        promptTokens: tokens.prompt_tokens,
+        completionTokens: tokens.completion_tokens,
+        totalTokens: tokens.total_tokens,
+        cachedTokens: tokens.cached_tokens,
+        cacheCreationTokens: tokens.cache_creation_input_tokens,
+        reasoningTokens: tokens.reasoning_tokens,
+      });
+      if (chatUsage && tokens.estimated) chatUsage.estimated = true;
+      if (usage?.input_tokens_details) {
+        chatUsage.prompt_tokens_details = { ...chatUsage.prompt_tokens_details, ...usage.input_tokens_details };
+      }
+      if (usage?.output_tokens_details) {
+        chatUsage.completion_tokens_details = { ...chatUsage.completion_tokens_details, ...usage.output_tokens_details };
+      }
       let finalResp;
 
       // Extract tool calls from Responses API output (function_call items)
@@ -268,7 +266,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
         finalResp = {
           response: {
             candidates: [{ content: { role: "model", parts: [{ text: textContent || "" }] }, finishReason: "STOP", index: 0 }],
-            usageMetadata: { promptTokenCount: inTokens, candidatesTokenCount: outTokens, totalTokenCount: inTokens + outTokens },
+            ...(tokens && { usageMetadata: { promptTokenCount: tokens.prompt_tokens, candidatesTokenCount: tokens.completion_tokens, totalTokenCount: tokens.total_tokens } }),
             modelVersion: model,
             responseId: jsonResponse.id || `resp_${Date.now()}`
           }
@@ -284,7 +282,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
           created: jsonResponse.created_at || Math.floor(Date.now() / 1000),
           model: jsonResponse.model || model,
           choices: [{ index: 0, message, finish_reason: finishReason }],
-          usage: { prompt_tokens: inTokens, completion_tokens: outTokens, total_tokens: inTokens + outTokens, ...cacheDetails }
+          ...(chatUsage && { usage: chatUsage })
         };
       }
 

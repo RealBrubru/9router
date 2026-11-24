@@ -190,9 +190,9 @@ function upstreamSse() {
   });
 }
 
-async function postChat(stream, accept, model = "openai/gpt-4.1") {
+async function postChat(stream, accept, model = "openai/gpt-4.1", streamOptions) {
   const { POST } = await import("../../src/app/api/v1/chat/completions/route.js");
-  const body = { model, messages: [{ role: "user", content: "hello" }], stream };
+  const body = { model, messages: [{ role: "user", content: "hello" }], stream, stream_options: streamOptions };
   const headers = { "content-type": "application/json" };
   if (accept) headers.accept = accept;
   return POST(new Request("http://localhost/api/v1/chat/completions", {
@@ -208,6 +208,17 @@ describe("Chat Completions response format with forced upstream streaming", { ti
   });
   afterEach(() => vi.unstubAllGlobals());
 
+  it("records explicitly reported zero usage in a non-streaming completion", async () => {
+    const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+    executeMock.mockResolvedValue({ response: Response.json({ ...completion, usage }) });
+    const response = await postChat(false);
+    expect((await response.json()).usage).toEqual(usage);
+    const { saveRequestUsage } = await import("@/lib/usageDb.js");
+    expect(saveRequestUsage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      tokens: expect.objectContaining(usage),
+    }));
+  });
+
   it.each([undefined, "application/json", "text/event-stream"])("returns JSON for stream:false with Accept %s", async (accept) => {
     executeMock.mockResolvedValue({ response: Response.json(completion) });
 
@@ -218,11 +229,7 @@ describe("Chat Completions response format with forced upstream streaming", { ti
     expect(response.headers.get("content-type")).toBe("application/json");
     const text = await response.text();
     expect(text).not.toContain(done);
-    // The JSON handler still applies the existing prompt-token margin on the wire.
-    expect(JSON.parse(text)).toMatchObject({
-      ...completion,
-      usage: { completion_tokens: 6, prompt_tokens_details: { cached_tokens: 0 } },
-    });
+    expect(JSON.parse(text)).toEqual(completion);
     const { saveRequestUsage } = await import("@/lib/usageDb.js");
     expect(saveRequestUsage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       tokens: expect.objectContaining({ prompt_tokens: 19, completion_tokens: 6, total_tokens: 25 }),
@@ -252,7 +259,11 @@ describe("Chat Completions response format with forced upstream streaming", { ti
     const events = [
       ["response.created", { response: { id: "resp-test", created_at: 1 } }],
       ["response.output_item.done", { output_index: 0, item }],
-      ["response.completed", { response: { usage: { input_tokens: 19, output_tokens: 6, total_tokens: 25 } } }],
+      ["response.completed", { response: { usage: {
+        input_tokens: 19, output_tokens: 6, total_tokens: 25,
+        input_tokens_details: { cached_tokens: 3 },
+        output_tokens_details: { reasoning_tokens: 4 },
+      } } }],
     ].map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("");
     executeMock.mockResolvedValue({
       response: new Response(events, { headers: { "content-type": "text/event-stream" } }),
@@ -269,14 +280,22 @@ describe("Chat Completions response format with forced upstream streaming", { ti
       id: "resp-test",
       object: "chat.completion",
       choices: completion.choices,
-      usage: { prompt_tokens: 19, completion_tokens: 6, total_tokens: 25 },
+      usage: {
+        prompt_tokens: 19, completion_tokens: 6, total_tokens: 25,
+        prompt_tokens_details: { cached_tokens: 3 },
+        completion_tokens_details: { reasoning_tokens: 4 },
+      },
     });
+    const { saveRequestUsage } = await import("@/lib/usageDb.js");
+    expect(saveRequestUsage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      tokens: expect.objectContaining({ prompt_tokens: 19, completion_tokens: 6, cached_tokens: 3, reasoning_tokens: 4 }),
+    }));
   });
 
   it.each([undefined, "application/json"])("keeps explicit streaming with Accept %s", async (accept) => {
     executeMock.mockResolvedValue({ response: upstreamSse() });
 
-    const response = await postChat(true, accept);
+    const response = await postChat(true, accept, undefined, { include_usage: true });
 
     expect(response.headers.get("content-type")).toBe("text/event-stream");
     const frames = (await response.text()).trim().split("\n\n");

@@ -118,6 +118,12 @@ export class DefaultExecutor extends BaseExecutor {
         if (transformed === body) transformed = { ...transformed };
         delete transformed.stream_options;
       }
+      // Collect usage from transports known to support it. The client preference
+      // is captured separately, before translating or transforming the request.
+      if (PROVIDERS[this.provider]?.supportsStreamUsage && stream === true && transformed.stream === true &&
+          transformed.stream_options?.include_usage !== true) {
+        transformed = { ...transformed, stream_options: { ...transformed.stream_options, include_usage: true } };
+      }
       // quirk: some openai-compatible providers reject Anthropic's client_metadata field
       if (this.config.quirks?.dropClientMetadata) {
         delete transformed.client_metadata;

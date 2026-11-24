@@ -1,6 +1,6 @@
 import { saveRequestUsage, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { COLORS } from "../../utils/stream.js";
-import { canonicalizeUsage } from "../../utils/usageTracking.js";
+import { canonicalizeUsage, extractUsage } from "../../utils/usageTracking.js";
 
 const OPTIONAL_PARAMS = [
   "temperature", "top_p", "top_k",
@@ -32,22 +32,21 @@ export function extractUsageFromResponse(responseBody) {
   // cache accounting correct for /v1/responses and codex traffic.
   if (responseBody.usage?.input_tokens !== undefined) {
     return {
-      prompt_tokens: responseBody.usage.input_tokens || 0,
-      completion_tokens: responseBody.usage.output_tokens || 0,
+      prompt_tokens: responseBody.usage.input_tokens,
+      completion_tokens: responseBody.usage.output_tokens,
       cached_tokens: responseBody.usage.cached_tokens ?? responseBody.usage.input_tokens_details?.cached_tokens,
       cache_read_input_tokens: responseBody.usage.cache_read_input_tokens,
-      cache_creation_input_tokens: responseBody.usage.cache_creation_input_tokens
+      cache_creation_input_tokens: responseBody.usage.cache_creation_input_tokens,
+      prompt_tokens_details: responseBody.usage.input_tokens_details,
+      completion_tokens_details: responseBody.usage.output_tokens_details,
+      reasoning_tokens: responseBody.usage.output_tokens_details?.reasoning_tokens,
+      estimated: responseBody.usage.estimated
     };
   }
 
   // OpenAI format
   if (responseBody.usage?.prompt_tokens !== undefined) {
-    return {
-      prompt_tokens: responseBody.usage.prompt_tokens || 0,
-      completion_tokens: responseBody.usage.completion_tokens || 0,
-      cached_tokens: responseBody.usage.cached_tokens ?? responseBody.usage.prompt_tokens_details?.cached_tokens,
-      reasoning_tokens: responseBody.usage.completion_tokens_details?.reasoning_tokens
-    };
+    return extractUsage(responseBody);
   }
 
   // Gemini format. Antigravity / gemini-cli wrap the payload in { response: {...} }.
@@ -112,29 +111,21 @@ export function formatDoneLine({ usage, latency }) {
     inStr += ` (CACHE ${parts.join(" ")})`;
   }
   const ttftStr = latency?.ttft ? ` · TTFT ${latency.ttft}ms` : "";
-  return `DONE ${latency?.total ?? 0}ms${ttftStr} · ${inStr} · OUT ${outTok}`;
+  const usageSummary = usage ? `${inStr} · OUT ${outTok}${usage.estimated ? " (estimated)" : ""}` : "usage unavailable";
+  return `DONE ${latency?.total ?? 0}ms${ttftStr} · ${usageSummary}`;
 }
 
 export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, endpoint, label = "USAGE", silent = false }) {
-  if (!tokens || typeof tokens !== "object") return;
-
-  const inTokens = tokens.input_tokens ?? tokens.prompt_tokens ?? 0;
-  const outTokens = tokens.output_tokens ?? tokens.completion_tokens ?? 0;
-
-  if (inTokens === 0 && outTokens === 0) return;
+  // Use cache-inclusive canonical counts for validation, storage and pricing.
+  const normalized = canonicalizeUsage(tokens);
+  if (!normalized) return;
+  const { prompt_tokens: inTokens, completion_tokens: outTokens } = normalized;
 
   if (!silent) {
     const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
     const accountSuffix = connectionId ? ` | account=${connectionId.slice(0, 8)}...` : "";
     console.log(`${COLORS.green}[${time}] 📊 [${label}] ${provider.toUpperCase()} | in=${inTokens} | out=${outTokens}${accountSuffix}${COLORS.reset}`);
   }
-
-  // Canonicalize to one storage convention (prompt_tokens cache-inclusive) so
-  // cached/cache-creation tokens survive to cost calc + stats. See canonicalizeUsage.
-  const normalized = canonicalizeUsage(tokens) || {
-    prompt_tokens: tokens.prompt_tokens ?? tokens.input_tokens ?? 0,
-    completion_tokens: tokens.completion_tokens ?? tokens.output_tokens ?? 0
-  };
 
   saveRequestUsage({
     provider: provider || "unknown",

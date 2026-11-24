@@ -17,43 +17,9 @@ export const COLORS = {
   cyan: "\x1b[36m"
 };
 
-// Buffer tokens to prevent context errors
-const BUFFER_TOKENS = 2000;
-
 // Get HH:MM:SS timestamp
 function getTimeString() {
   return new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-/**
- * Add buffer tokens to usage to prevent context errors
- * @param {object} usage - Usage object (any format)
- * @returns {object} Usage with buffer added
- */
-export function addBufferToUsage(usage) {
-  if (!usage || typeof usage !== "object") return usage;
-
-  const result = { ...usage };
-
-  // Claude format
-  if (result.input_tokens !== undefined) {
-    result.input_tokens += BUFFER_TOKENS;
-  }
-
-  // OpenAI format
-  if (result.prompt_tokens !== undefined) {
-    result.prompt_tokens += BUFFER_TOKENS;
-  }
-
-  // Calculate or update total_tokens
-  if (result.total_tokens !== undefined) {
-    result.total_tokens += BUFFER_TOKENS;
-  } else if (result.prompt_tokens !== undefined && result.completion_tokens !== undefined) {
-    // Calculate total_tokens if not exists
-    result.total_tokens = result.prompt_tokens + result.completion_tokens;
-  }
-
-  return result;
 }
 
 export function filterUsageForFormat(usage, targetFormat) {
@@ -141,6 +107,7 @@ export function normalizeUsage(usage) {
   }
 
   if (Object.keys(normalized).length === 0) return null;
+  if (usage.estimated === true) normalized.estimated = true;
   return normalized;
 }
 
@@ -162,16 +129,23 @@ export function normalizeUsage(usage) {
  * @returns {object|null} canonical token object, or null for invalid input
  */
 export function canonicalizeUsage(usage) {
-  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return null;
+  if (!hasReportedUsage(usage)) return null;
 
   const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   const completion = num(usage.completion_tokens ?? usage.output_tokens);
-  const reasoning = num(usage.reasoning_tokens);
+  const promptDetails = usage.prompt_tokens_details ?? usage.input_tokens_details;
+  const completionDetails = usage.completion_tokens_details ?? usage.output_tokens_details;
+  const reasoning = num(usage.reasoning_tokens ?? completionDetails?.reasoning_tokens);
   // Fall back to the nested prompt_tokens_details.cache_creation_tokens shape
   // (buildUsage()'s OpenAI-forwarding format) when the top-level field is
   // absent, so callers that pass a buildUsage() object through don't silently
   // drop cache_creation.
-  const cacheCreation = num(usage.cache_creation_input_tokens ?? usage.prompt_tokens_details?.cache_creation_tokens);
+  const cacheCreation = num(usage.cache_creation_input_tokens ?? promptDetails?.cache_creation_tokens);
+
+  if (usage.estimated === true) {
+    const prompt = num(usage.prompt_tokens ?? usage.input_tokens);
+    return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion, estimated: true };
+  }
 
   let prompt = num(usage.prompt_tokens ?? usage.input_tokens);
   let cached;
@@ -193,7 +167,7 @@ export function canonicalizeUsage(usage) {
     // Mirror the cacheCreation fallback above: buildUsage() only ever emits the
     // nested prompt_tokens_details.cached_tokens shape, so without this the
     // cache-read count is silently dropped on every buildUsage()-derived usage.
-    cached = num(usage.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens);
+    cached = num(usage.cached_tokens ?? promptDetails?.cached_tokens);
   }
 
   const result = {
@@ -206,6 +180,8 @@ export function canonicalizeUsage(usage) {
     cache_creation_input_tokens: cacheCreation,
   };
   if (reasoning > 0) result.reasoning_tokens = reasoning;
+  if (promptDetails) result.prompt_tokens_details = promptDetails;
+  if (completionDetails) result.completion_tokens_details = completionDetails;
   return result;
 }
 
@@ -220,7 +196,8 @@ export function hasValidUsage(usage) {
   // Check for any known token field with value > 0
   const tokenFields = [
     "prompt_tokens", "completion_tokens", "total_tokens",  // OpenAI
-    "input_tokens", "output_tokens",                        // Claude
+    "input_tokens", "output_tokens",                        // Claude / Responses
+    "cache_read_input_tokens", "cache_creation_input_tokens", // Claude excludes cache from input
     "promptTokenCount", "candidatesTokenCount"              // Gemini
   ];
 
@@ -231,6 +208,16 @@ export function hasValidUsage(usage) {
   }
 
   return false;
+}
+
+// A complete zero measurement is meaningful at a terminal event or in JSON.
+export function hasReportedUsage(usage) {
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return false;
+  return hasValidUsage(usage) || (
+    usage.estimated !== true &&
+    (usage.prompt_tokens ?? usage.input_tokens) === 0 &&
+    (usage.completion_tokens ?? usage.output_tokens) === 0
+  );
 }
 
 /**
@@ -267,11 +254,12 @@ export function extractUsage(chunk) {
     const usage = chunk.response.usage;
     const cachedTokens = usage.input_tokens_details?.cached_tokens;
     return normalizeUsage({
-      prompt_tokens: usage.input_tokens || usage.prompt_tokens || 0,
-      completion_tokens: usage.output_tokens || usage.completion_tokens || 0,
+      prompt_tokens: usage.input_tokens ?? usage.prompt_tokens,
+      completion_tokens: usage.output_tokens ?? usage.completion_tokens,
       cached_tokens: cachedTokens,
       reasoning_tokens: usage.output_tokens_details?.reasoning_tokens,
-      prompt_tokens_details: cachedTokens ? { cached_tokens: cachedTokens } : undefined
+      prompt_tokens_details: usage.input_tokens_details,
+      completion_tokens_details: usage.output_tokens_details
     });
   }
 
@@ -279,8 +267,9 @@ export function extractUsage(chunk) {
   if (chunk.usage && typeof chunk.usage === "object" && chunk.usage.prompt_tokens !== undefined) {
     return normalizeUsage({
       prompt_tokens: chunk.usage.prompt_tokens,
-      completion_tokens: chunk.usage.completion_tokens || 0,
-      cached_tokens: chunk.usage.prompt_tokens_details?.cached_tokens || chunk.usage.prompt_cache_hit_tokens,
+      completion_tokens: chunk.usage.completion_tokens,
+      cached_tokens: chunk.usage.cached_tokens ?? chunk.usage.prompt_tokens_details?.cached_tokens ?? chunk.usage.prompt_cache_hit_tokens,
+      estimated: chunk.usage.estimated,
       reasoning_tokens: chunk.usage.completion_tokens_details?.reasoning_tokens,
       prompt_tokens_details: chunk.usage.prompt_tokens_details,
       completion_tokens_details: chunk.usage.completion_tokens_details
@@ -329,6 +318,8 @@ export function extractUsage(chunk) {
 export function mergeUsage(prev, next) {
   if (!prev) return next || null;
   if (!next) return prev;
+  if (prev.estimated === true && next.estimated !== true) return hasValidUsage(next) ? next : prev;
+  if (next.estimated === true) return hasValidUsage(prev) && prev.estimated !== true ? prev : next;
   const merged = { ...prev };
   const nextHasCache = next.cache_read_input_tokens != null || next.cache_creation_input_tokens != null;
   const prevHasCache = prev.cache_read_input_tokens != null || prev.cache_creation_input_tokens != null;
@@ -384,22 +375,15 @@ export function estimateOutputTokens(contentLength) {
  * @param {string} targetFormat - Target format from FORMATS
  */
 export function formatUsage(inputTokens, outputTokens, targetFormat) {
-  // Claude format uses input_tokens/output_tokens
   if (targetFormat === FORMATS.CLAUDE) {
-    return addBufferToUsage({ 
-      input_tokens: inputTokens, 
-      output_tokens: outputTokens, 
-      estimated: true 
-    });
+    return { input_tokens: inputTokens, output_tokens: outputTokens, estimated: true };
   }
-
-  // Default: OpenAI format (works for openai, gemini, responses, etc.)
-  return addBufferToUsage({
+  return {
     prompt_tokens: inputTokens,
     completion_tokens: outputTokens,
     total_tokens: inputTokens + outputTokens,
     estimated: true
-  });
+  };
 }
 
 /**

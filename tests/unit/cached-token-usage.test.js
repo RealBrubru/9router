@@ -176,6 +176,21 @@ describe("Anthropic streaming usage (message_start carries cache, message_delta 
   });
 });
 
+describe("usage provenance", () => {
+  const estimate = { prompt_tokens: 2048, completion_tokens: 6, total_tokens: 2054, estimated: true };
+  const actual = { prompt_tokens: 19, completion_tokens: 144, total_tokens: 163 };
+
+  it("extracts an upstream estimate without mistaking it for actual usage", () => {
+    expect(extractUsage({ usage: estimate })).toMatchObject({ estimated: true });
+  });
+
+  it("never merges estimated counters into actual counters", () => {
+    expect(mergeUsage(estimate, actual)).toEqual(actual);
+    expect(mergeUsage(actual, estimate)).toEqual(actual);
+    expect(mergeUsage(estimate, { prompt_tokens: 0, completion_tokens: 0 })).toEqual(estimate);
+  });
+});
+
 describe("Kiro usage pass-through", () => {
   it("passes through plain input/output when no cache fields are present", () => {
     const out = toOpenAIUsage({ inputTokens: 100, outputTokens: 50 }, "kiro");

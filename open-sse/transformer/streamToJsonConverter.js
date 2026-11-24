@@ -29,17 +29,11 @@ function processSSEMessage(msg, state) {
     state.items.set(parsed.output_index ?? 0, parsed.item);
   } else if (eventType === "response.completed" || eventType === "response.done") {
     state.status = "completed";
-    if (parsed.response?.usage) {
-      state.usage.input_tokens = parsed.response.usage.input_tokens || 0;
-      state.usage.output_tokens = parsed.response.usage.output_tokens || 0;
-      state.usage.total_tokens = parsed.response.usage.total_tokens || 0;
-    }
+    if (parsed.response?.usage) state.usage = parsed.response.usage;
   } else if (eventType === "response.failed") {
     state.status = "failed";
   }
 }
-
-const EMPTY_RESPONSE = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
 
 /**
  * Convert Responses API SSE stream to single JSON response
@@ -48,7 +42,7 @@ const EMPTY_RESPONSE = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
  */
 export async function convertResponsesStreamToJson(stream) {
   if (!stream || typeof stream.getReader !== "function") {
-    return { id: `resp_${Date.now()}`, object: "response", created_at: Math.floor(Date.now() / 1000), status: "failed", output: [], usage: { ...EMPTY_RESPONSE } };
+    return { id: `resp_${Date.now()}`, object: "response", created_at: Math.floor(Date.now() / 1000), status: "failed", output: [], usage: null };
   }
 
   const reader = stream.getReader();
@@ -59,7 +53,7 @@ export async function convertResponsesStreamToJson(stream) {
     responseId: "",
     created: Math.floor(Date.now() / 1000),
     status: "in_progress",
-    usage: { ...EMPTY_RESPONSE },
+    usage: null,
     items: new Map()
   };
 

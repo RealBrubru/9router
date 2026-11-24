@@ -1,9 +1,10 @@
 import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { PROVIDERS } from "../config/providers.js";
+import { buildUsage } from "../translator/concerns/usage.js";
 import { liftReasoningAliases } from "../translator/concerns/reasoning.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
-import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
+import { extractUsage, mergeUsage, hasValidUsage, hasReportedUsage, estimateUsage, logUsage, canonicalizeUsage, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE, ensureStreamToolCallIds } from "./streamHelpers.js";
 import { restoreToolNames } from "./opencodeFingerprint.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
@@ -20,7 +21,7 @@ const sharedEncoder = new TextEncoder();
 /**
  * Stream modes
  */
-const STREAM_MODE = {
+export const STREAM_MODE = {
   TRANSLATE: "translate",    // Full translation between formats
   PASSTHROUGH: "passthrough" // No translation, normalize output, extract usage
 };
@@ -57,12 +58,22 @@ export function createSSEStream(options = {}) {
     connectionId = null,
     body = null,
     onStreamComplete = null,
+    onChatDone = null,
     apiKey = null,
-    credentials = null
+    credentials = null,
+    includeUsage = body?.stream_options?.include_usage === true
   } = options;
 
   let buffer = "";
   let usage = null;
+  let terminalZeroUsage = null;
+  const isPassthrough = mode === STREAM_MODE.PASSTHROUGH;
+  const clientFormat = sourceFormat ?? (isPassthrough ? PROVIDERS[provider]?.format ?? FORMATS.OPENAI : null);
+  const isChatCompletions = clientFormat === FORMATS.OPENAI;
+  const isNativeChat = isPassthrough || targetFormat === FORMATS.OPENAI;
+  let chatChunk;
+  let chatUsage;
+  let chatFinished = false;
 
   // Tool-call ids already sent to the client, keyed by the tool-call index.
   // A late fragment that opens a NEW index without an id must not reach the
@@ -105,22 +116,76 @@ export function createSSEStream(options = {}) {
   // clients, the thinking accumulation below and usage accounting see the text.
   const liftAliases = mode === STREAM_MODE.PASSTHROUGH && !!PROVIDERS[provider]?.quirks?.reasoningAliasFields;
 
+  // These formats expose usage directly. Keep it separate from translator state,
+  // which may convert provider fields or hold a cache-inclusive running total.
+  const tracksWireUsage = isPassthrough || targetFormat === FORMATS.CLAUDE ||
+    targetFormat === FORMATS.OPENAI_RESPONSES;
+  const getUsage = () => {
+    if (terminalZeroUsage) return terminalZeroUsage;
+    if (hasValidUsage(usage)) return usage;
+    return hasValidUsage(state?.usage) ? state.usage : null;
+  };
+
+  const recordUsage = (chunk) => {
+    const extracted = extractUsage(chunk);
+    if (!extracted) return;
+    const isUsageTrailer = chunk.choices?.length === 0 || isOpenAIResponsesTerminalEvent(null, chunk) ||
+      (targetFormat === FORMATS.OLLAMA && chunk.done === true);
+    if (!hasValidUsage(extracted) && isUsageTrailer && hasReportedUsage(extracted)) {
+      terminalZeroUsage = extracted;
+    } else if (hasValidUsage(extracted) && !extracted.estimated) {
+      terminalZeroUsage = null;
+    }
+
+    if (tracksWireUsage) {
+      // A complete Chat Completions trailer is the authoritative snapshot.
+      usage = isChatCompletions && chunk.choices?.length === 0 &&
+        hasValidUsage(extracted) && !extracted.estimated
+        ? extracted
+        : mergeUsage(usage, extracted);
+    }
+    if (state) {
+      state.usage = mergeUsage(state.usage, extracted);
+    }
+  };
+
+  const prepareChatChunk = (chunk) => {
+    if (!isChatCompletions) return chunk;
+    if (!Array.isArray(chunk.choices)) return chunk.usage && !chunk.error ? null : chunk;
+    chatFinished ||= chunk.choices.some((choice) => Boolean(choice.finish_reason));
+    // Keep upstream's usage details verbatim when it already speaks Chat Completions.
+    if (isNativeChat && hasReportedUsage(chunk.usage) && !chunk.usage.estimated &&
+        (hasValidUsage(chunk.usage) || chunk.choices.length === 0)) chatUsage = chunk.usage;
+    chatChunk = chunk;
+    if (chunk.choices.length === 0 && chunk.usage) return null;
+    if (includeUsage) return { ...chunk, usage: null };
+    const { usage: _usage, ...withoutUsage } = chunk;
+    return withoutUsage;
+  };
+
+  const formatTranslatedChunk = (item) => {
+    const chunk = prepareChatChunk(item);
+    if (!chunk) return null;
+    return isChatCompletions && Array.isArray(chunk.choices)
+      ? `data: ${JSON.stringify(chunk)}\n\n`
+      : formatSSE(chunk, sourceFormat);
+  };
+
   // Usage/logging tail, callable from transform() as well as flush(): a client that
   // closes right after the terminal event cancels the reader, and flush() never runs.
-  const finalizeStream = () => {
+  const finalizeStream = (interrupted = false) => {
     if (completionFlushTimer) { clearTimeout(completionFlushTimer); completionFlushTimer = null; }
     if (finalized) return;
     finalized = true;
 
-    const isPassthrough = mode === STREAM_MODE.PASSTHROUGH;
-    let finalUsage = isPassthrough ? usage : state?.usage;
-
-    if (!hasValidUsage(finalUsage) && totalContentLength > 0) {
-      finalUsage = estimateUsage(body, totalContentLength, isPassthrough ? FORMATS.OPENAI : sourceFormat);
-      if (isPassthrough) usage = finalUsage; else state.usage = finalUsage;
+    let finalUsage = getUsage();
+    if (!hasReportedUsage(finalUsage)) {
+      finalUsage = !interrupted && totalContentLength > 0
+        ? estimateUsage(body, totalContentLength, isPassthrough ? FORMATS.OPENAI : sourceFormat)
+        : null;
     }
 
-    if (hasValidUsage(finalUsage)) {
+    if (hasReportedUsage(finalUsage)) {
       logUsage(isPassthrough ? provider : (state?.provider || targetFormat), finalUsage, model, connectionId, apiKey);
     } else {
       appendRequestLog({ model, provider, connectionId, tokens: null, status: "200 OK" }).catch(() => { });
@@ -132,6 +197,33 @@ export function createSSEStream(options = {}) {
         thinking: accumulatedThinking
       }, finalUsage, ttftAt);
     }
+  };
+
+  const finishChatStream = (controller, interrupted = false) => {
+    if (streamDoneSent) return;
+    streamDoneSent = true;
+    const actualUsage = getUsage();
+    if (includeUsage && chatChunk && hasReportedUsage(actualUsage) && !actualUsage.estimated) {
+      const tokens = canonicalizeUsage(actualUsage);
+      const { id, object, created, model: chunkModel, system_fingerprint, service_tier } = chatChunk;
+      const output = formatSSE({
+        id, object, created, model: chunkModel, system_fingerprint, service_tier, choices: [],
+        usage: chatUsage || buildUsage({
+          promptTokens: tokens.prompt_tokens,
+          completionTokens: tokens.completion_tokens,
+          totalTokens: tokens.total_tokens,
+          cachedTokens: tokens.cached_tokens,
+          cacheCreationTokens: tokens.cache_creation_input_tokens,
+          reasoningTokens: tokens.reasoning_tokens,
+        }),
+      }, FORMATS.OPENAI);
+      reqLogger?.appendConvertedChunk?.(output);
+      controller.enqueue(sharedEncoder.encode(output));
+    }
+    finalizeStream(interrupted);
+    onChatDone?.();
+    reqLogger?.appendConvertedChunk?.(SSE_DONE);
+    controller.enqueue(sharedEncoder.encode(SSE_DONE));
   };
 
   // Emit the deferred response.completed now — at [DONE], or when the watchdog
@@ -148,7 +240,7 @@ export function createSSEStream(options = {}) {
     finalizeStream();
   };
 
-  return new TransformStream({
+  const transformer = {
     transform(chunk, controller) {
       if (!ttftAt) ttftAt = Date.now();
       const text = decoder.decode(chunk, { stream: true });
@@ -174,13 +266,20 @@ export function createSSEStream(options = {}) {
         }
 
         // Passthrough mode: normalize and forward
-        if (mode === STREAM_MODE.PASSTHROUGH) {
+        if (isPassthrough) {
+          if (isChatCompletions && streamDoneSent) continue;
           let output;
-          let injectedUsage = false;
+          let changed = false;
           let responsesTerminal = false;
 
           // Upstream already sent the sentinel; flush() must not append a second one.
-          if (trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]") streamDoneSent = true;
+          if (trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]") {
+            if (isChatCompletions) {
+              finishChatStream(controller);
+              continue;
+            }
+            streamDoneSent = true;
+          }
 
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             try {
@@ -271,29 +370,13 @@ export function createSSEStream(options = {}) {
                 accumulatedThinking += reasoning;
               }
 
-              const extracted = extractUsage(parsed);
-              if (extracted) {
-                usage = mergeUsage(usage, extracted);
-              }
-
+              recordUsage(parsed);
               responsesTerminal = isOpenAIResponsesTerminalEvent(currentOpenAIResponsesEvent, parsed);
 
-              const isFinishChunk = parsed.choices?.[0]?.finish_reason;
-              if (isFinishChunk && !hasValidUsage(parsed.usage)) {
-                const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
-                parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
-                output = `data: ${JSON.stringify(parsed)}\n`;
-                usage = estimated;
-                injectedUsage = true;
-              } else if (isFinishChunk && usage) {
-                const buffered = addBufferToUsage(usage);
-                parsed.usage = filterUsageForFormat(buffered, FORMATS.OPENAI);
-                output = `data: ${JSON.stringify(parsed)}\n`;
-                injectedUsage = true;
-              } else if (idFixed || fieldsInjected || toolCallIdFixed || toolNameRestored) {
-                output = `data: ${JSON.stringify(parsed)}\n`;
-                injectedUsage = true;
-              }
+              const chatOutput = prepareChatChunk(parsed);
+              if (!chatOutput) continue;
+              changed = chatOutput !== parsed || idFixed || fieldsInjected || toolCallIdFixed || toolNameRestored;
+              if (changed) output = `data: ${JSON.stringify(chatOutput)}\n`;
             } catch {
               // Skip non-JSON data lines silently — don't forward garbage to clients.
               // Upstream providers sometimes return plain-text errors (HTML, rate-limit
@@ -302,7 +385,7 @@ export function createSSEStream(options = {}) {
             }
           }
 
-          if (!injectedUsage) {
+          if (!changed) {
             if (line.startsWith("data:") && !line.startsWith("data: ")) {
               output = "data: " + line.slice(5) + "\n";
             } else {
@@ -359,7 +442,7 @@ export function createSSEStream(options = {}) {
             reqLogger?.appendConvertedChunk?.(doneOutput);
             controller.enqueue(sharedEncoder.encode(doneOutput));
           }
-          streamDoneSent = true;
+          if (!isChatCompletions) streamDoneSent = true;
           if (keepsOpenAIResponsesFormat) openAIResponsesDoneSent = true;
           continue;
         }
@@ -402,8 +485,7 @@ export function createSSEStream(options = {}) {
         }
 
         // Extract usage
-        const extracted = extractUsage(parsed);
-        if (extracted) state.usage = mergeUsage(state.usage, extracted); // Keep original usage for logging
+        recordUsage(parsed);
 
         // Responses same-format passthrough: re-emit with original event framing
         if (keepsOpenAIResponsesFormat && openAIResponsesEventName) {
@@ -438,19 +520,8 @@ export function createSSEStream(options = {}) {
               continue; // Skip this empty chunk
             }
 
-            // Inject estimated usage if finish chunk has no valid usage
-            const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
-            if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
-              const estimated = estimateUsage(body, totalContentLength, sourceFormat);
-              item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
-              state.usage = estimated;
-            } else if (state.finishReason && isFinishChunk && state.usage) {
-              // Add buffer and filter usage for client (but keep original in state.usage for logging)
-              const buffered = addBufferToUsage(state.usage);
-              item.usage = filterUsageForFormat(buffered, sourceFormat);
-            }
-
-            const output = formatSSE(item, sourceFormat);
+            const output = formatTranslatedChunk(item);
+            if (!output) continue;
             reqLogger?.appendConvertedChunk?.(output);
             controller.enqueue(sharedEncoder.encode(output));
             sseEmittedCount++;
@@ -479,7 +550,12 @@ export function createSSEStream(options = {}) {
         const remaining = decoder.decode();
         if (remaining) buffer += remaining;
 
-        if (mode === STREAM_MODE.PASSTHROUGH) {
+        if (isPassthrough) {
+          if (isChatCompletions) {
+            if (buffer) transformer.transform(sharedEncoder.encode("\n\n"), controller);
+            finishChatStream(controller, !chatFinished);
+            return;
+          }
           // An unterminated trailing "data: [DONE]" is the upstream sentinel: don't
           // forward it raw (it would glue onto the properly framed one appended
           // below, #5592).
@@ -523,8 +599,7 @@ export function createSSEStream(options = {}) {
           if (parsed && !isDoneSentinel) {
             // Same accumulation the transform loop does, so finalizeStream() can
             // log a tail chunk's tokens instead of falling back to null.
-            const extracted = extractUsage(parsed);
-            if (extracted) state.usage = mergeUsage(state.usage, extracted);
+            recordUsage(parsed);
 
             const translated = translateResponse(targetFormat, sourceFormat, parsed, state);
 
@@ -538,7 +613,8 @@ export function createSSEStream(options = {}) {
             if (translated?.length > 0) {
               for (const item of translated) {
                 if (item === null || item === undefined) continue;
-                const output = formatSSE(item, sourceFormat);
+                const output = formatTranslatedChunk(item);
+                if (!output) continue;
                 reqLogger?.appendConvertedChunk?.(output);
                 controller.enqueue(sharedEncoder.encode(output));
               }
@@ -558,7 +634,8 @@ export function createSSEStream(options = {}) {
         if (flushed?.length > 0) {
           for (const item of flushed) {
             if (item === null || item === undefined) continue;
-            const output = formatSSE(item, sourceFormat);
+            const output = formatTranslatedChunk(item);
+            if (!output) continue;
             reqLogger?.appendConvertedChunk?.(output);
             controller.enqueue(sharedEncoder.encode(output));
           }
@@ -581,13 +658,19 @@ export function createSSEStream(options = {}) {
           streamDoneSent = true;
         }
 
-        finalizeStream();
+        if (isChatCompletions) finishChatStream(controller, !chatFinished);
+        else finalizeStream();
       } catch (error) {
         console.log("Error in flush:", error);
-        finalizeStream();
+        finalizeStream(true);
       }
+    },
+
+    cancel() {
+      finalizeStream(true);
     }
-  });
+  };
+  return new TransformStream(transformer);
 }
 
 export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, credentials = null) {

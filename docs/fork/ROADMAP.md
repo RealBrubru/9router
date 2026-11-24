@@ -8,7 +8,7 @@ Ordem aprovada para o início do fork. O proprietário pode revisar as prioridad
 | 1. Diagnóstico técnico inicial | Concluída | Fluxo de chat e achados registrados em [BUGS.md](BUGS.md), com escopo de validação por evidência |
 | 2. Documentação e organização | Concluída | Onboarding, instruções de desenvolvimento e fluxo de branches |
 | 3. Contrato JSON/SSE e botão Test | Implementada | 120 testes aprovados em 11 arquivos, incluindo 14 novos cenários. O falso negativo do botão Test foi resolvido com upstream simulado. A validação na imagem Docker fica na etapa 5. |
-| 4. Contabilização, persistência e custo | Em andamento | Dar precedência ao uso real, preservar a origem, validar SQLite e Analytics e corrigir a fórmula de preço conforme o provedor |
+| 4. Contabilização, persistência e custo | Em andamento | Uso real, estimativas e Analytics validados em SQLite temporário. A revisão do custo estimado é a próxima entrega da etapa. |
 | 5. Imagem Docker ARM64 | Planejada | Construir e homologar imagem própria em ambiente isolado |
 | 6. Segregação de contas | Planejada | Restringir a elegibilidade de conexões por chave e cobrir retries e combos |
 | 7. Daily Token Budget | Planejada | Especificar regras por provedor e implementar controle preventivo |
