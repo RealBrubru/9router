@@ -162,9 +162,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Check client Accept header preference for non-streaming requests
   // This fixes AI SDK compatibility where clients send Accept: application/json
   const acceptHeader = clientRawRequest?.headers?.accept || "";
-  const clientPrefersJson = acceptHeader.includes("application/json");
-  const clientPrefersSSE = acceptHeader.includes("text/event-stream");
-  if (clientPrefersJson && !clientPrefersSSE && body.stream !== true && !providerRequiresStreaming) {
+  const clientPrefersJson = acceptHeader.includes("application/json") && !acceptHeader.includes("text/event-stream");
+  const clientRequestedJson = !clientRequestedStreaming && (body.stream === false || clientPrefersJson);
+  if (clientPrefersJson && body.stream !== true && !providerRequiresStreaming) {
     stream = false;
   }
 
@@ -532,8 +532,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     if (result) { streamController.handleComplete(); return result; }
   }
 
-  // True non-streaming response
-  if (!stream) {
+  // The provider may return JSON even when its transport was set to stream.
+  if (!stream || clientRequestedJson) {
     const result = await handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, reqLogger, toolNameMap, customToolNames, trackDone, appendLog });
     streamController.handleComplete();
     return result;

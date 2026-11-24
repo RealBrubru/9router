@@ -4,11 +4,11 @@
 
 ## Bug 1 — JSON inválido com `stream: false`
 
-**Aberto.** Na instalação experimental, o POST em `/v1/chat/completions` com `openai/gpt-5-mini`, `max_completion_tokens: 1024` e `stream: false` recebeu HTTP 200. O corpo tinha um JSON completo com `choices` e `usage`, seguido de `data: [DONE]`, e o tipo era `text/event-stream`. O parser retornou `Extra data: line 36 column 1 (char 797)`. Acrescentar `Accept: application/json` produziu o mesmo problema.
+**Correção implementada.** Na instalação experimental, o POST em `/v1/chat/completions` com `openai/gpt-5-mini`, `max_completion_tokens: 1024` e `stream: false` recebeu HTTP 200. O corpo tinha um JSON completo com `choices` e `usage`, seguido de `data: [DONE]`, e o tipo era `text/event-stream`. O parser retornou `Extra data: line 36 column 1 (char 797)`. Acrescentar `Accept: application/json` produziu o mesmo problema.
 
 **Evidência no código.** O [registro da OpenAI](../../open-sse/providers/registry/openai.js#L26) força o sinal interno de streaming. O [core](../../open-sse/handlers/chatCore.js#L145) ignora a preferência JSON nesse caso. O [executor](../../open-sse/executors/default.js#L287) usa o sinal no cabeçalho, enquanto [o envio](../../open-sse/executors/base.js#L143) serializa o corpo que conserva `stream: false`. Ao receber JSON, [a conversão forçada](../../open-sse/handlers/chatCore/sseToJsonHandler.js#L189) devolve `null`, e o [despacho](../../open-sse/handlers/chatCore.js#L526) cai no [handler SSE](../../open-sse/handlers/chatCore/streamingHandler.js#L67).
 
-**Reprodução sintética.** O transformador em passagem direta repassou um JSON de teste e anexou `data: [DONE]` após a chave final. O [flush](../../open-sse/utils/stream.js#L482) explica o sufixo. Essa reprodução isolou o transformador. O teste do endpoint completo ainda está pendente.
+**Reprodução sintética.** O transformador em passagem direta repassou um JSON de teste e anexou `data: [DONE]` após a chave final. O [flush](../../open-sse/utils/stream.js#L482) explica o sufixo. Essa reprodução isolou o transformador. A correção foi verificada pela rota de chat com upstream simulado. A rodada final aprovou 120 testes em 11 arquivos, incluindo 14 novos cenários de regressão. A imagem Docker em uso ainda aguarda validação.
 
 **Aceite.** Para `stream: false`, obter um único objeto JSON com `application/json` e sem delimitadores SSE, com ou sem `Accept`. Se o upstream enviar SSE, agregá-lo no formato pedido pelo cliente. Preservar SSE para `stream: true` e o transporte de provedores que dependem dele.
 
@@ -37,7 +37,7 @@
 
 ## Bug 3 — Falso negativo do botão Test
 
-**Aberto.** O Dashboard mostrou `Provider returned no completion choices for this model` em testes de modelos OpenAI. Chamadas diretas geraram resposta. O JSON inválido do Bug 1 é uma causa reproduzida para a mensagem. Ainda falta confirmar o corpo recebido pelo probe na instalação.
+**Resolvido no teste com upstream simulado.** O Dashboard mostrou `Provider returned no completion choices for this model` em testes de modelos OpenAI. Chamadas diretas geraram resposta. O JSON inválido do Bug 1 é uma causa reproduzida para a mensagem. Após a correção do Bug 1, o probe passou pela rota de chat com upstream simulado sem mudanças no próprio probe. A instalação Docker ainda aguarda validação.
 
 **Reprodução sintética.** [pingModelByKind](../../src/app/api/models/test/ping.js#L194) mostrou exatamente essa mensagem com o JSON sintético seguido de `[DONE]`. Com o mesmo JSON limpo, retornou `ok: true`. A exceção de parse é ignorada, então HTTP 200 com corpo malformado cai na mesma mensagem que JSON com `choices` vazio.
 
