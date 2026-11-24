@@ -50,6 +50,9 @@ logs/*
 source/*
 .cursor/*
 docs/*
+!/docs/fork/
+/docs/fork/*
+!/docs/fork/*.md
 !docs/ARCHITECTURE.md
 test/*
 open-sse/test/*
