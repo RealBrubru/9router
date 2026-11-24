@@ -16,7 +16,9 @@ async function runOllamaStream(input) {
   });
 
   const output = stream.pipeThrough(
-    createSSETransformStreamWithLogger(FORMATS.OLLAMA, FORMATS.OPENAI, "ollama", null, null, "gpt-oss:120b"),
+    createSSETransformStreamWithLogger(FORMATS.OLLAMA, FORMATS.OPENAI, "ollama", null, null, "gpt-oss:120b", null, {
+      stream_options: { include_usage: true },
+    }),
   );
 
   const reader = output.getReader();
@@ -52,8 +54,10 @@ describe("Ollama NDJSON stream: the tail left in the line buffer", () => {
 
   it("delivers the final chunk — finish_reason and usage — when it arrives without its newline", async () => {
     const out = await runOllamaStream([chunk("hello"), chunk("", true)].join("\n"));
-    const last = deltas(out).at(-1);
-    expect(last.choices[0].finish_reason).toBe("stop");
+    const parsed = deltas(out);
+    const last = parsed.at(-1);
+    expect(parsed.at(-2)).toMatchObject({ choices: [{ finish_reason: "stop" }], usage: null });
+    expect(last.choices).toEqual([]);
     expect(last.usage).toEqual({ prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 });
   });
 
@@ -61,8 +65,9 @@ describe("Ollama NDJSON stream: the tail left in the line buffer", () => {
     const out = await runOllamaStream(`${[chunk("hello"), chunk(" world"), chunk("", true)].join("\n")}\n`);
     const parsed = deltas(out);
     expect(parsed.map((c) => c.choices?.[0]?.delta?.content || "").join("")).toBe("hello world");
-    expect(parsed.at(-1).choices[0].finish_reason).toBe("stop");
-    expect(parsed.at(-1).usage.total_tokens).toBe(18);
+    expect(parsed.at(-2)).toMatchObject({ choices: [{ finish_reason: "stop" }], usage: null });
+    expect(parsed.at(-1).choices).toEqual([]);
+    expect(parsed.at(-1).usage).toEqual({ prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 });
   });
 });
 

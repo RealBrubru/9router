@@ -13,13 +13,18 @@ const USAGE_METADATA = {
   candidatesTokenCount: 56,
   cachedContentTokenCount: 78,
   thoughtsTokenCount: 90,
+  totalTokenCount: 1380,
 };
 
 const EXPECTED = {
   prompt_tokens: 1234,
-  completion_tokens: 56,
+  // Gemini reports the candidate and thought counts separately.
+  completion_tokens: 146,
+  total_tokens: 1380,
   cached_tokens: 78,
   reasoning_tokens: 90,
+  prompt_tokens_details: { cached_tokens: 78 },
+  completion_tokens_details: { reasoning_tokens: 90 },
 };
 
 describe("#3260 non-streaming usage extraction for enveloped Gemini responses", () => {
