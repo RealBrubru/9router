@@ -1,0 +1,239 @@
+import { randomUUID } from "node:crypto";
+import { getAdapterSync } from "../db/driver.js";
+import { createAttemptRegistryRepository } from "../db/repos/attemptRegistryRepo.js";
+
+const ROUTE = "chat_completions";
+const MAX_SSE_LINE = 256 * 1024;
+const modelId = value => typeof value === "string" && /^[a-z0-9][a-z0-9_.:/-]{0,199}$/i.test(value) &&
+  value.trim() === value && !value.includes("//") && !/(?:^|[:/])(?:sk-|gh[pousr]_|github_pat_)/i.test(value) ? value : null;
+const tokens = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+
+function normalizeUsage(usage) {
+  const input = tokens(usage?.prompt_tokens);
+  const output = tokens(usage?.completion_tokens);
+  if (usage?.estimated === true || (input === null && output === null)) return null;
+  const cache = tokens(usage?.prompt_tokens_details?.cached_tokens);
+  const reasoning = tokens(usage?.completion_tokens_details?.reasoning_tokens);
+  return {
+    inputTokens: input === null ? null : String(input),
+    outputTokens: output === null ? null : String(output),
+    cachedInputTokens: input !== null && cache !== null && cache <= input ? String(cache) : null,
+    reasoningTokens: output !== null && reasoning !== null && reasoning <= output ? String(reasoning) : null,
+  };
+}
+
+function configuredBinding(db, connectionId, at) {
+  const matches = db.all(`SELECT organizationId, validFrom FROM quotaConnectionBindings
+    WHERE connectionId = ? AND validFrom <= ? AND (validTo IS NULL OR validTo > ?) LIMIT 2`, [connectionId, at, at]);
+  return matches.length === 1 ? { status: "configured", ...matches[0] } : { status: "unknown" };
+}
+
+function attemptObserver({ write, now, db, connectionId, sentModel }) {
+  let submitted = false;
+  let finished = false;
+  let response = null;
+  let streamStarted = false;
+  let model = null;
+  let usage = null;
+  let completeUsage = false;
+  let buffer = "";
+  let skipLine = false;
+  const decoder = new TextDecoder();
+
+  function finish(state, outcome) {
+    if (finished) return;
+    finished = true;
+    buffer = "";
+    if (model) write("observeReturnedModel", { returnedModel: model });
+    if (usage) write("recordUsage", {
+      usage: { ...usage, quality: "measured", source: "provider", completeness: completeUsage ? "complete" : "partial" },
+    });
+    write("finish", {
+      state, outcome, ...(state === "not_sent" ? { noSendEvidence: "before_transport_invocation" } : {}),
+    });
+  }
+
+  function observeUsage(value, final) {
+    const observed = normalizeUsage(value);
+    if (!observed) return;
+    const nextComplete = final && observed.inputTokens !== null && observed.outputTokens !== null;
+    if (completeUsage && !nextComplete) return;
+    completeUsage = nextComplete;
+    if (!usage || nextComplete) usage = observed;
+    else {
+      // Provider frames are cumulative snapshots. Retain each side's associated
+      // breakdown only when that side is absent from the newer partial frame.
+      for (const [total, subset] of [["inputTokens", "cachedInputTokens"], ["outputTokens", "reasoningTokens"]]) {
+        if (observed[total] !== null) {
+          usage[total] = observed[total];
+          usage[subset] = observed[subset];
+        }
+      }
+    }
+  }
+
+  function line(value) {
+    const text = value.trim();
+    if (!text.startsWith("data:")) return;
+    const payload = text.slice(5).trim();
+    if (payload === "[DONE]") {
+      finish("closed", "completed");
+      return;
+    }
+    try {
+      const event = JSON.parse(payload);
+      model ||= modelId(event?.model);
+      observeUsage(event?.usage, Array.isArray(event?.choices) && event.choices.length === 0);
+      if (event?.error) finish("closed", "provider_error");
+    } catch {
+      // Malformed lines have no evidentiary value. The client parser owns their handling.
+    }
+  }
+
+  function feed(text) {
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length && !finished; i++) {
+      const value = lines[i];
+      const last = i === lines.length - 1;
+      if (!skipLine && buffer.length + value.length <= MAX_SSE_LINE) buffer += value;
+      else {
+        buffer = "";
+        skipLine = true;
+      }
+      if (!last) {
+        if (!skipLine) line(buffer);
+        buffer = "";
+        skipLine = false;
+      }
+    }
+  }
+
+  return {
+    beforeSend() {
+      submitted = true;
+      write("markDispatchPossible", () => {
+        const at = now();
+        return { sentModel: modelId(sentModel), binding: configuredBinding(db, connectionId, at), occurredAt: at };
+      });
+    },
+    observeResponse(value) {
+      if (value.redirected) {
+        finish("uncertain", "transport_error");
+        return;
+      }
+      response = value;
+      write("acknowledge", { source: "transport", providerAccepted: "unknown", httpStatus: value.status });
+      if (!value.ok) finish("closed", "provider_error");
+    },
+    matches(value) { return !finished && response === value; },
+    failure(outcome) {
+      if (!submitted) finish("not_sent", outcome === "transport_error" ? "internal_error" : outcome);
+      else finish("uncertain", outcome);
+    },
+    json(value) {
+      if (!Array.isArray(value?.choices) && !value?.error) {
+        finish("uncertain", "transport_error");
+        return;
+      }
+      model = modelId(value?.model);
+      observeUsage(value?.usage, true);
+      finish("closed", value?.error ? "provider_error" : "completed");
+    },
+    sseChunk(chunk) {
+      if (finished) return;
+      if (!streamStarted) {
+        streamStarted = true;
+        write("markInProgress", { mode: "stream" });
+      }
+      feed(decoder.decode(chunk, { stream: true }));
+    },
+    sseEof() {
+      if (finished) return;
+      feed(decoder.decode());
+      if (!skipLine && buffer) line(buffer);
+      if (!finished) finish("uncertain", "transport_error");
+    },
+  };
+}
+
+export function createOpenAiDirectAttemptPilot({ openDb = () => getAdapterSync(), env = process.env, now = Date.now,
+  reportGap = () => console.warn("[Attempt Registry] OpenAI direct pilot coverage is indeterminate") } = {}) {
+  let current;
+  let pendingGap;
+  const instanceId = randomUUID();
+
+  function prepare(requestId, receivedAt, requestedModel, { connectionId, sentModel }) {
+    let epoch = current;
+    let version;
+    const attemptId = randomUUID();
+    let failed = false;
+    function gap() {
+      if (failed) return;
+      failed = true;
+      if (epoch && current === epoch) {
+        pendingGap = { epoch, occurredAt: now() };
+        try {
+          epoch.repo.markCoverageGap({ id: epoch.id, occurredAt: pendingGap.occurredAt, reason: "storage_failure" });
+          pendingGap = null;
+        } catch {}
+        current = null;
+      }
+      try { reportGap(); } catch {}
+    }
+    try {
+      const db = openDb();
+      if (pendingGap?.epoch.db === db) {
+        const { epoch: previous, occurredAt } = pendingGap;
+        previous.repo.markCoverageGap({ id: previous.id, occurredAt, reason: "storage_failure" });
+        pendingGap = null;
+      }
+      if (current?.db !== db) {
+        epoch = { db, id: randomUUID(), repo: createAttemptRegistryRepository(db, { now }) };
+        epoch.repo.openEpoch({
+          id: epoch.id, instanceId, instrumentationVersion: "openai-direct-v1", route: ROUTE, operation: "chat",
+          transport: "http", barrierCertified: false, openedAt: now(),
+        });
+        current = epoch;
+      }
+      epoch = current;
+      const at = now();
+      version = epoch.repo.prepare({
+        request: { id: requestId, route: ROUTE, requestedModel: modelId(requestedModel), receivedAt },
+        attempt: { id: attemptId, epochId: epoch.id, provider: "openai", connectionId, purpose: "primary" },
+        eventId: randomUUID(), occurredAt: at, knownAt: at,
+      }).version;
+    } catch {
+      gap();
+      return null;
+    }
+
+    function write(method, details) {
+      if (failed) return;
+      try {
+        const at = now();
+        const extra = typeof details === "function" ? details() : details;
+        version = epoch.repo[method]({
+          attemptId, eventId: randomUUID(), expectedVersion: version, occurredAt: at, knownAt: now(), ...extra,
+        }).version;
+      } catch { gap(); }
+    }
+    return attemptObserver({ write, now, db: epoch.db, connectionId, sentModel });
+  }
+
+  return function begin() {
+    if (env.ATTEMPT_REGISTRY_OPENAI_DIRECT !== "true") return null;
+    const requestId = randomUUID();
+    const receivedAt = now();
+    return {
+      forModel(requestedModel) {
+        let observer;
+        return {
+          prepare(details) { return observer = prepare(requestId, receivedAt, requestedModel, details); },
+          current() { return observer; },
+        };
+      },
+    };
+  };
+}
+
+export const beginOpenAiDirectAttempt = createOpenAiDirectAttemptPilot();

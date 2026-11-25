@@ -34,7 +34,7 @@ import { resolveSmartChoice } from "../services/systemoneRouter.js";
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
  * Format detection and translation handled by translator
  */
-export async function handleChat(request, clientRawRequest = null) {
+export async function handleChat(request, clientRawRequest = null, attemptPilot = null) {
   let body;
   try {
     body = await request.json();
@@ -55,7 +55,8 @@ export async function handleChat(request, clientRawRequest = null) {
   // Claude Code marks a 1M-context request as `<model>[1m]`; the marker matches
   // no combo, alias or provider/model pair, so it must not reach resolution.
   // The capability travels in the anthropic-beta header, forwarded as-is.
-  const { model: modelStr, contextMarker } = stripModelContextMarker(body.model);
+  const originalModel = body.model;
+  const { model: modelStr, contextMarker } = stripModelContextMarker(originalModel);
   if (contextMarker) body.model = modelStr;
 
   const session = resolveSessionIdentity({ headers: clientRawRequest?.headers, body });
@@ -184,13 +185,14 @@ export async function handleChat(request, clientRawRequest = null) {
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, contextMarker ? `${modelStr.slice(modelStr.indexOf("/") + 1)}[${contextMarker}]` : null);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey,
+    contextMarker ? `${modelStr.slice(modelStr.indexOf("/") + 1)}[${contextMarker}]` : null, attemptPilot?.forModel(originalModel));
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null, attemptPilot = null) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
@@ -318,6 +320,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       log,
       clientRawRequest,
       connectionId: credentials.connectionId,
+      attemptPilot: provider === "openai" && excludeConnectionIds.size === 0 &&
+        refreshedCredentials.authType === "apikey" && refreshedCredentials.apiKey ? attemptPilot : null,
       userAgent,
       apiKey,
       ccFilterNaming: !!chatSettings.ccFilterNaming,

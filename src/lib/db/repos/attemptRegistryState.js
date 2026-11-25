@@ -100,7 +100,8 @@ export function transition(state, kind, details, barrierCertified) {
       return state;
     case "finish":
       requireValue(Object.hasOwn(FINISH_FROM, details.state) && FINISH_FROM[details.state].includes(state) &&
-        FINISH_OUTCOMES[details.state].includes(details.outcome) && (details.state !== "not_sent" || barrierCertified), "invalid_transition");
+        FINISH_OUTCOMES[details.state].includes(details.outcome) && (details.state !== "not_sent" ||
+          barrierCertified || details.noSendEvidence === "before_transport_invocation"), "invalid_transition");
       return details.state;
     case "recover":
       requireValue(OPEN_STATES.includes(state), "invalid_transition");

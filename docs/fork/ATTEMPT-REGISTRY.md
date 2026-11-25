@@ -1,6 +1,6 @@
 # Attempt Registry
 
-A etapa **7.1.2c2** implementa a persistência e a máquina de estados em SQLite. A integração futura propagará contexto explícito da requisição até as fronteiras semânticas de submissão, inclusive retries e fallbacks. O Registry independe da Observability e opera com metadados tipados. Nesta etapa, somente os testes chamam o repositório. [Repositório](../../src/lib/db/repos/attemptRegistryRepo.js) · [Roadmap](ROADMAP.md#incrementos-do-quota-manager)
+A etapa **7.1.2c2** implementou a persistência e a máquina de estados em SQLite. A **7.1.2c3a** liga o Registry ao primeiro envio elegível do Chat Completions direto da OpenAI. O Registry independe da Observability e opera com metadados tipados. [Repositório](../../src/lib/db/repos/attemptRegistryRepo.js) · [Roadmap](ROADMAP.md#incrementos-do-quota-manager)
 
 ## Schema e identidade
 
@@ -25,8 +25,8 @@ O modelo enviado pertence ao evento de despacho. O modelo devolvido pode chegar 
 | Estado | Entrada ou avanço permitido |
 | --- | --- |
 | `prepared` | Criado por `prepare`, junto da requisição quando ela ainda não existe. |
-| `not_sent` | A partir de `prepared`, por encerramento anterior à barreira certificada ou recuperação de proprietário inativo nesse mesmo caminho. |
-| `dispatch_possible` | A partir de `prepared`, por `markDispatchPossible`. A gravação deve anteceder a chamada à rede na futura integração. |
+| `not_sent` | A partir de `prepared`, por evidência em execução de que o transporte ainda não foi invocado, por encerramento anterior à barreira certificada ou por recuperação de proprietário inativo em caminho certificado. |
+| `dispatch_possible` | A partir de `prepared`, por `markDispatchPossible`. O piloto tenta gravar imediatamente antes da primeira invocação do transporte. |
 | `response_observed` | A partir de `dispatch_possible`, por `acknowledge`. Origem da resposta, status HTTP e aceite confirmado são campos independentes. A confirmação exige evidência do provedor. |
 | `in_progress` | A partir de `response_observed`, por `markInProgress` para stream ou job. |
 | `closed` | A partir de `response_observed` ou `in_progress`, por `finish` com um terminal observado. |
@@ -55,10 +55,20 @@ Uma tentativa ainda `prepared` pode virar `not_sent` quando o caminho certifica 
 
 Os testes verificam transações e reabertura. A durabilidade diante de queda de energia ou falha do host depende do driver, configuração e armazenamento e ainda precisa ser avaliada. A recuperação deve respeitar as garantias efetivamente confirmadas.
 
+## Piloto OpenAI direto
+
+`ATTEMPT_REGISTRY_OPENAI_DIRECT=true` habilita o piloto. O padrão é desligado. Somente `POST /v1/chat/completions`, servido por `/api/v1/chat/completions`, cria o contexto no ingresso. O piloto seleciona o primeiro caminho de modelo único, com conexão OpenAI por API key, formatos Chat Completions nos dois lados e transporte Undici direto à URL oficial. O `requestId` acompanha esse contexto e o `attemptId` é gerado na preparação. O modelo enviado vem do corpo preparado para o transporte. O vínculo vigente é `configured` quando demonstrável pela configuração e `unknown` quando ausente ou ambíguo. Os headers recebidos registram resposta observada com aceite `unknown`. [Rota](../../src/app/api/v1/chat/completions/route.js) · [Piloto](../../src/lib/quota/openAiDirectAttemptPilot.js) · [Fronteira HTTP](../../open-sse/utils/proxyFetch.js)
+
+No JSON, o piloto lê o objeto original já parseado. No SSE nativo ou agregado em JSON, acompanha os frames brutos antes da tradução. Registra o primeiro chunk como início do stream e mantém a observação de modelo e do último uso válido em memória até finalizar, inclusive em interrupções. Cache e raciocínio permanecem detalhamentos de entrada e saída. `[DONE]` recebido do provedor encerra a tentativa. EOF sem terminal, cancelamento do leitor ou timeout após envio possível deixam a tentativa incerta. Um marcador produzido pelo gateway não serve como evidência do terminal do provedor. HTTP de erro fecha o transporte observado com uso desconhecido. O Registry preserva a contabilização existente de Analytics e funciona com Observability desativada.
+
+Em Observation, erros de armazenamento deixam a época indeterminada ou com lacuna. Se a gravação da lacuna falhar, o processo tenta novamente na próxima tentativa elegível. A época declara `barrierCertified: false`. Uma falha constatada pela execução antes de chamar o transporte pode encerrar `not_sent`. Após crash, essa conclusão não pode ser reconstruída pelo piloto.
+
+Combos, fallbacks entre conexões, retries, refresh, replays TLS/socket, redirecionamentos internos, proxies, transportes alternativos, outros endpoints e outros provedores permanecem sem instrumentação certificada. Respostas de outra submissão ficam fora da tentativa original. A recuperação automática e a cobertura por caminho serão avaliadas nos incrementos seguintes. A integração com a Reconciliation fica para a 7.1.2c4.
+
 ## Integração e backlog
 
 - **Observation / fail-open.** Política escolhida para a primeira integração. Uma falha do Registry preserva o atendimento e deixa lacuna ou cobertura indeterminada. Um caminho que pode enviar após falhar na gravação da barreira deve declarar `barrierCertified: false`.
 - **Required / fail-closed.** Opção futura de exigir o registro confirmado antes do envio. Depende de decisão explícita de disponibilidade e validação da durabilidade e da cobertura.
 - **Histórico e Analytics.** `linkUsageHistory` grava uma associação explícita para a cardinalidade piloto. O Registry não escreve em `usageHistory` nem `usageDaily`. A integração manterá um único produtor de Analytics.
 - **Retenção configurável.** Planejar expiração em lotes de eventos encerrados, preservando tentativas abertas, dependências causais, tombstones de instância e marcadores de lacuna. Uma janela após expiração perde a evidência necessária para afirmar cobertura. A limpeza automática permanece no backlog.
-- **Request Lifecycle Dashboard.** Backlog associado à Granular Observability. Deve mostrar estados, retries, origem do uso e uma matriz de cobertura por rota, operação e transporte. Conversas e conteúdo seguem uma política separada.
+- **Request Lifecycle Dashboard.** Backlog associado à Granular Observability. Inclui uma matriz de cobertura por rota, operação e transporte e um Request Inspector com linha do tempo por tentativa, estados do transporte, desfecho, origem do uso, latência, retries e evidências. O Inspector usa apenas metadados operacionais.

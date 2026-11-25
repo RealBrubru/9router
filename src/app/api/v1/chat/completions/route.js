@@ -1,5 +1,6 @@
 import { handleChat } from "@/sse/handlers/chat.js";
 import { initTranslators } from "open-sse/translator/index.js";
+import { beginOpenAiDirectAttempt } from "@/lib/quota/openAiDirectAttemptPilot.js";
 
 let initialized = false;
 
@@ -27,9 +28,10 @@ export async function OPTIONS() {
 }
 
 export async function POST(request) {  
+  const attemptPilot = beginOpenAiDirectAttempt();
   // Fallback to local handling
   await ensureInitialized();
   
-  return await handleChat(request);
+  return await handleChat(request, null, attemptPilot);
 }
 

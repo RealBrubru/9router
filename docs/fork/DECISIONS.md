@@ -9,7 +9,7 @@
 - **Integridade do uso.** Usar o consumo informado como fonte prioritária. Preservar estimativas com origem identificável no JSON existente. Manter a consolidação de eventos reais parciais e validar a retirada da margem de contexto com clientes CLI na homologação.
 - **Nome do futuro projeto independente.** PipoRouter, com posicionamento Open Source AI Infrastructure e slogan “Your AI. Your resources. Your rules.”. Histórico, licenças e atribuições ao upstream fazem parte da transição planejada. [Direção estratégica](PROJECT.md#direção-para-um-projeto-independente)
 - **Conciliação passiva.** O saldo indicativo preserva a janela, as hipóteses e a qualidade das informações. A futura autorização de envio exige decisão própria por tentativa, organização, política e janela, vinculada à reserva atômica. [Contrato de conciliação](QUOTA-RECONCILIATION.md)
-- **Attempt Registry.** Propagar contexto explícito e registrar na fronteira semântica do envio. Recuperar somente com evidência de que a instância encerrou. A primeira integração usará Observation. Required e a retenção configurável seguem no backlog. [Persistência e recuperação](ATTEMPT-REGISTRY.md)
+- **Attempt Registry.** Propagar contexto explícito e registrar na fronteira semântica do envio. Recuperar somente com evidência de que a instância encerrou. O piloto usa Observation e fica desativado por padrão. Required e a retenção configurável seguem no backlog. [Persistência e recuperação](ATTEMPT-REGISTRY.md)
 
 ## Fluxo proposto para sincronização
 

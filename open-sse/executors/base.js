@@ -1,6 +1,7 @@
 import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { shouldRefreshCredentials } from "../services/oauthCredentialManager.js";
-import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { isDirectTransport, proxyAwareFetch } from "../utils/proxyFetch.js";
+import { PROVIDERS } from "../config/providers.js";
 import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
@@ -97,7 +98,7 @@ export class BaseExecutor {
     return { status: response.status, message: bodyText || `HTTP ${response.status}` };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, providerOverrides = null, directFetch = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, providerOverrides = null, directFetch = null, attemptPilot = null }) {
     const fallbackCount = this.getFallbackCount();
     let lastError = null;
     let lastStatus = 0;
@@ -128,6 +129,10 @@ export class BaseExecutor {
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
       const url = this.buildUrl(model, stream, urlIndex, credentials);
       const transformedBody = this.transformRequest(model, body, stream, credentials);
+      const attempt = attemptPilot && this.provider === "openai" && urlIndex === 0 && !retryAttemptsByUrl[urlIndex] &&
+        !directFetch && url === PROVIDERS.openai.baseUrl && isDirectTransport(url, proxyOptions)
+        ? attemptPilot.prepare({ connectionId: credentials.connectionId, sentModel: transformedBody?.model })
+        : null;
       const headers = this.buildHeaders(credentials, stream, url, model, transformedBody);
       // User per-provider override wins over registry headers (blocked names filtered at the API)
       if (providerOverrides?.headers) Object.assign(headers, providerOverrides.headers);
@@ -147,7 +152,7 @@ export class BaseExecutor {
         const effectiveProxyOptions = forceFreshSocketByUrl[urlIndex]
           ? { ...(proxyOptions || {}), forceFreshSocket: true }
           : proxyOptions;
-        const response = await proxyAwareFetch(url, {
+        const fetchOptions = {
           method: "POST",
           headers,
           body: bodyStr,
@@ -155,7 +160,10 @@ export class BaseExecutor {
           // Protocol adapters that need their own transport (opencode's TLS
           // fingerprint) override the direct path; proxies still take priority.
           ...(directFetch ? { directFetch } : {}),
-        }, effectiveProxyOptions);
+        };
+        const response = attempt
+          ? await proxyAwareFetch(url, fetchOptions, effectiveProxyOptions, attempt)
+          : await proxyAwareFetch(url, fetchOptions, effectiveProxyOptions);
         clearTimeout(connectTimer);
         const ct = response.headers?.get?.("content-type") || "";
         const cl = response.headers?.get?.("content-length") || "?";
@@ -176,6 +184,7 @@ export class BaseExecutor {
 
         return { response, url, headers, transformedBody };
       } catch (error) {
+        attempt?.failure("transport_error");
         clearTimeout(connectTimer);
         lastError = error;
         const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";

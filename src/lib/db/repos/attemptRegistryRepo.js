@@ -275,8 +275,12 @@ export function createAttemptRegistryRepository(db, { now = Date.now, verifyInac
   }
 
   function finish(input) {
-    fields(input, [...EVENT_FIELDS, "state", "outcome"]);
-    return change(input, "finish", { state: input.state, outcome: input.outcome });
+    fields(input, [...EVENT_FIELDS, "state", "outcome", "noSendEvidence"]);
+    requireValue(input.noSendEvidence === undefined ||
+      (input.state === "not_sent" && input.noSendEvidence === "before_transport_invocation"));
+    const details = { state: input.state, outcome: input.outcome };
+    if (input.noSendEvidence) details.noSendEvidence = input.noSendEvidence;
+    return change(input, "finish", details);
   }
 
   async function recoverOpen(input) {
