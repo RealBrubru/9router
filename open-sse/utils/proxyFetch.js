@@ -377,25 +377,31 @@ function isBodyReplaySafe(body) {
   return !(body && typeof body.getReader === "function" && body.locked);
 }
 
-async function fetchWithTlsFallback(url, options, proxyUrl, forceFreshSocket = false, attempt = null) {
+async function observedFetch(url, options, attempt, usesConfiguredKey) {
+  if (!attempt) return rawFetch(url, options);
+  attempt.beforeSend(usesConfiguredKey);
+  try {
+    const response = await rawFetch(url, options);
+    attempt.observeResponse(response);
+    return response;
+  } catch (error) {
+    const code = error?.cause?.code ?? error?.code;
+    const timedOut = error?.name === "TimeoutError" || /TIMEOUT/.test(code ?? "") ||
+      options.signal?.reason?.message === "fetch connect timeout";
+    const cancelled = options.signal?.aborted || error?.name === "AbortError";
+    attempt.failure(timedOut ? "timeout" : cancelled ? "cancelled" : "transport_error");
+    throw error;
+  }
+}
+
+async function fetchWithTlsFallback(url, options, proxyUrl, forceFreshSocket = false, observation = null, replayCause) {
   try {
     // Protocol adapters may need Node's HTTP/1 transport on the direct path.
     // Keep proxy/no-proxy resolution and strict-proxy enforcement here.
     if (!proxyUrl && options.directFetch) return await options.directFetch(url, options);
     const dispatcher = await getDispatcher(proxyUrl, false, forceFreshSocket);
-    if (!attempt) return await rawFetch(url, { ...options, dispatcher });
-    attempt.beforeSend();
-    try {
-      const response = await rawFetch(url, { ...options, dispatcher });
-      attempt.observeResponse(response);
-      return response;
-    } catch (error) {
-      const code = error?.cause?.code ?? error?.code;
-      const timedOut = error?.name === "TimeoutError" || /TIMEOUT/.test(code ?? "") ||
-        options.signal?.reason?.message === "fetch connect timeout";
-      attempt.failure(timedOut ? "timeout" : options.signal?.aborted ? "cancelled" : "transport_error");
-      throw error;
-    }
+    const attempt = replayCause ? observation?.prepareReplay(replayCause) : observation?.attempt;
+    return await observedFetch(url, { ...options, dispatcher }, attempt, observation?.usesConfiguredKey);
   } catch (err) {
     const isStrictSsl = options.strictTls === true || process.env.STRICT_SSL === "true" || process.env.STRICT_SSL === "1";
     if (!isStrictSsl && isTlsCertError(err)) {
@@ -405,7 +411,8 @@ async function fetchWithTlsFallback(url, options, proxyUrl, forceFreshSocket = f
       // ponytail: in-memory insecure agent fallback for self-signed MITM corporate/antivirus certs
       console.warn(`[ProxyFetch] TLS cert verification failed (${err.cause?.code || err.code}), retrying with insecure TLS: ${url}`);
       const insecureDispatcher = await getDispatcher(proxyUrl, true, forceFreshSocket);
-      return await rawFetch(url, { ...options, dispatcher: insecureDispatcher });
+      return await observedFetch(url, { ...options, dispatcher: insecureDispatcher },
+        observation?.prepareReplay("tls_replay"), observation?.usesConfiguredKey);
     }
 
     // Stale keep-alive recovery: a pooled socket died before returning headers. Replay
@@ -420,7 +427,7 @@ async function fetchWithTlsFallback(url, options, proxyUrl, forceFreshSocket = f
       && isStaleSocketError(err)
     ) {
       dbg("FETCH", `stale keep-alive socket (${err.cause?.code || err.code || err.message}), retrying on fresh socket: ${url}`);
-      return await fetchWithTlsFallback(url, options, proxyUrl, true);
+      return await fetchWithTlsFallback(url, options, proxyUrl, true, observation, "socket_replay");
     }
     throw err;
   }
@@ -490,7 +497,7 @@ export function isDirectTransport(url, options) {
     !resolveConnectionProxyUrl(url, options) && !normalizeProxyUrl(getEnvProxyUrl(url)) && !shouldBypassMitmDns(url);
 }
 
-export async function proxyAwareFetch(url, options = {}, proxyOptions = null, attempt = null) {
+export async function proxyAwareFetch(url, options = {}, proxyOptions = null, observation = null) {
   // Keep the spoofed Claude Code version current (new models require a minimum CLI version).
   // Refresh in the background: the request uses the version already known, so an
   // unreachable npm registry can never add latency to the chat path.
@@ -596,7 +603,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null, at
 
   // got-scraping disabled — use native fetch directly
   // (Re-enable per-host by wrapping with tryGotScrapingFetch when needed)
-  return fetchWithTlsFallback(url, options, null, forceFreshSocket, attempt);
+  return fetchWithTlsFallback(url, options, null, forceFreshSocket, observation);
 }
 
 /**

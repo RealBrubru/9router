@@ -7,6 +7,10 @@ const MODEL = /^[a-z0-9][a-z0-9_.:/-]{0,199}$/i;
 const EVENT_FIELDS = ["attemptId", "eventId", "expectedVersion", "occurredAt", "knownAt"];
 const OPEN_STATES_SQL = OPEN_STATES.map(() => "?").join(", ");
 const GAP_REASONS = ["storage_failure", "uninstrumented_dispatch", "unknown"];
+const SUBMISSION_CAUSES = {
+  executor_retry: "retry", socket_replay: "retry", tls_replay: "retry",
+  connection_fallback: "fallback", credential_refresh: "retry",
+};
 const INITIAL_USAGE = Object.freeze({ quality: "unknown", source: null, completeness: "unknown",
   inputTokens: null, outputTokens: null, cachedInputTokens: null, reasoningTokens: null, evidenceId: null, explicitZero: false });
 const NOT_APPLICABLE = Object.freeze({ ...INITIAL_USAGE, quality: "not_applicable", completeness: "not_applicable" });
@@ -132,7 +136,7 @@ export function createAttemptRegistryRepository(db, { now = Date.now, verifyInac
   function prepare(input) {
     fields(input, ["request", "attempt", "eventId", "occurredAt", "knownAt"]);
     fields(input.request, ["id", "route", "requestedModel", "receivedAt"]);
-    fields(input.attempt, ["id", "epochId", "previousAttemptId", "provider", "connectionId", "purpose"]);
+    fields(input.attempt, ["id", "epochId", "previousAttemptId", "provider", "connectionId", "purpose", "submissionCause"]);
     const request = {
       id: opaqueId(input.request.id),
       route: textId(input.request.route, LABEL),
@@ -150,7 +154,13 @@ export function createAttemptRegistryRepository(db, { now = Date.now, verifyInac
     };
     const eventId = opaqueId(input.eventId);
     requireValue(attempt.id !== request.id && attempt.id !== attempt.previousAttemptId && PURPOSES.includes(attempt.purpose));
-    requireValue(!["retry", "fallback", "continuation"].includes(attempt.purpose) || attempt.previousAttemptId);
+    const { submissionCause } = input.attempt;
+    requireValue(submissionCause === undefined ||
+      (Object.hasOwn(SUBMISSION_CAUSES, submissionCause) && SUBMISSION_CAUSES[submissionCause] === attempt.purpose));
+    requireValue(!["retry", "fallback", "continuation"].includes(attempt.purpose) || attempt.previousAttemptId || submissionCause);
+    const details = submissionCause === undefined ? {} : {
+      submissionCause, ...(attempt.previousAttemptId ? {} : { causalGap: "predecessor_unobserved" }),
+    };
     const times = eventTimes(input, now);
     requireValue(request.receivedAt <= times.occurredAt, "invalid_time_order");
 
@@ -161,7 +171,8 @@ export function createAttemptRegistryRepository(db, { now = Date.now, verifyInac
       if (existing) {
         const original = getEvent(attempt.id, eventId);
         requireValue(original?.kind === "prepare" && sameFields(existing, attempt) &&
-          original.occurredAt === times.occurredAt && original.knownAt === times.knownAt, "identity_conflict");
+          original.occurredAt === times.occurredAt && original.knownAt === times.knownAt &&
+          original.details === JSON.stringify(details), "identity_conflict");
         return decodeEvent(original);
       }
       const epoch = getEpoch(attempt.epochId);
@@ -175,7 +186,7 @@ export function createAttemptRegistryRepository(db, { now = Date.now, verifyInac
       if (!existingRequest) db.run("INSERT INTO inferenceRequests(id, route, requestedModel, receivedAt) VALUES (?, ?, ?, ?)", Object.values(request));
       db.run(`INSERT INTO inferenceAttempts(id, requestId, epochId, previousAttemptId, provider, connectionId, purpose, state, version)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'prepared', 1)`, Object.values(attempt));
-      return insertEvent(attempt.id, eventId, 1, "prepare", "prepared", null, times, {});
+      return insertEvent(attempt.id, eventId, 1, "prepare", "prepared", null, times, details);
     });
   }
 
@@ -241,8 +252,11 @@ export function createAttemptRegistryRepository(db, { now = Date.now, verifyInac
   }
 
   function markDispatchPossible(input) {
-    fields(input, [...EVENT_FIELDS, "sentModel", "binding"]);
-    return change(input, "dispatch", { sentModel: modelId(input.sentModel), binding: normalizeBinding(input.binding) });
+    fields(input, [...EVENT_FIELDS, "sentModel", "binding", "usageHistoryLink"]);
+    requireValue(input.usageHistoryLink === undefined || input.usageHistoryLink === "unverified");
+    return change(input, "dispatch", { sentModel: modelId(input.sentModel), binding: normalizeBinding(input.binding),
+      ...(input.usageHistoryLink ? { usageHistoryLink: input.usageHistoryLink } : {}),
+    });
   }
 
   function acknowledge(input) {

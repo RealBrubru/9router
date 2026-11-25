@@ -141,6 +141,19 @@ describe("Attempt Registry state machine", () => {
     expect(read().events).toHaveLength(2);
   });
 
+  it("makes submission causes idempotent and records a missing predecessor explicitly", () => {
+    repo.prepare(makePrepare());
+    const next = makePrepare({
+      eventId: id(21),
+      attempt: { ...makePrepare().attempt, id: id(20), purpose: "retry", submissionCause: "socket_replay" },
+    });
+    const event = repo.prepare(next);
+    expect(event.details).toEqual({ submissionCause: "socket_replay", causalGap: "predecessor_unobserved" });
+    expect(repo.prepare(next)).toEqual(event);
+    expect(() => repo.prepare({ ...next, attempt: { ...next.attempt, submissionCause: "executor_retry" } })).toThrow("identity_conflict");
+    expect(() => repo.prepare({ ...next, attempt: { ...next.attempt, submissionCause: "connection_fallback" } })).toThrow("invalid_input");
+  });
+
   it("requires a causal predecessor to belong to the same request", () => {
     const initial = makePrepare();
     repo.prepare(initial);

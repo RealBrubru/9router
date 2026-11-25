@@ -6,6 +6,14 @@ import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
 
+function usesConfiguredApiKey(headers, key) {
+  if (!key) return false;
+  const scopeHeaders = Object.entries(headers).filter(([name]) =>
+    ["authorization", "openai-organization", "openai-project"].includes(name.toLowerCase()));
+  return scopeHeaders.length === 1 && scopeHeaders[0][0].toLowerCase() === "authorization" &&
+    scopeHeaders[0][1] === `Bearer ${key}`;
+}
+
 /**
  * BaseExecutor - Base class for provider executors
  */
@@ -129,10 +137,10 @@ export class BaseExecutor {
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
       const url = this.buildUrl(model, stream, urlIndex, credentials);
       const transformedBody = this.transformRequest(model, body, stream, credentials);
-      const attempt = attemptPilot && this.provider === "openai" && urlIndex === 0 && !retryAttemptsByUrl[urlIndex] &&
-        !directFetch && url === PROVIDERS.openai.baseUrl && isDirectTransport(url, proxyOptions)
-        ? attemptPilot.prepare({ connectionId: credentials.connectionId, sentModel: transformedBody?.model })
-        : null;
+      const eligible = attemptPilot && this.provider === "openai" && !directFetch &&
+        url === PROVIDERS.openai.baseUrl && isDirectTransport(url, proxyOptions);
+      const prepare = eligible ? cause => attemptPilot.prepare({ connectionId: credentials.connectionId, sentModel: transformedBody?.model }, cause) : null;
+      const attempt = prepare?.(retryAttemptsByUrl[urlIndex] || urlIndex > 0 ? "executor_retry" : undefined);
       const headers = this.buildHeaders(credentials, stream, url, model, transformedBody);
       // User per-provider override wins over registry headers (blocked names filtered at the API)
       if (providerOverrides?.headers) Object.assign(headers, providerOverrides.headers);
@@ -161,8 +169,11 @@ export class BaseExecutor {
           // fingerprint) override the direct path; proxies still take priority.
           ...(directFetch ? { directFetch } : {}),
         };
-        const response = attempt
-          ? await proxyAwareFetch(url, fetchOptions, effectiveProxyOptions, attempt)
+        if (!eligible) attemptPilot?.skip();
+        const response = eligible
+          ? await proxyAwareFetch(url, fetchOptions, effectiveProxyOptions, {
+            attempt, prepareReplay: prepare, usesConfiguredKey: usesConfiguredApiKey(headers, credentials.apiKey),
+          })
           : await proxyAwareFetch(url, fetchOptions, effectiveProxyOptions);
         clearTimeout(connectTimer);
         const ct = response.headers?.get?.("content-type") || "";
@@ -184,7 +195,7 @@ export class BaseExecutor {
 
         return { response, url, headers, transformedBody };
       } catch (error) {
-        attempt?.failure("transport_error");
+        attemptPilot?.current()?.failure(error.name === "AbortError" ? "cancelled" : "transport_error");
         clearTimeout(connectTimer);
         lastError = error;
         const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";

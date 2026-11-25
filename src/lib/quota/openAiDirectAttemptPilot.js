@@ -28,10 +28,9 @@ function configuredBinding(db, connectionId, at) {
   return matches.length === 1 ? { status: "configured", ...matches[0] } : { status: "unknown" };
 }
 
-function attemptObserver({ write, now, db, connectionId, sentModel }) {
+function attemptObserver({ write, now, db, connectionId, sentModel, onResponse, onOpaqueDispatch }) {
   let submitted = false;
   let finished = false;
-  let response = null;
   let streamStarted = false;
   let model = null;
   let usage = null;
@@ -109,23 +108,38 @@ function attemptObserver({ write, now, db, connectionId, sentModel }) {
   }
 
   return {
-    beforeSend() {
+    beforeSend(usesConfiguredKey) {
       submitted = true;
       write("markDispatchPossible", () => {
         const at = now();
-        return { sentModel: modelId(sentModel), binding: configuredBinding(db, connectionId, at), occurredAt: at };
+        const binding = usesConfiguredKey ? configuredBinding(db, connectionId, at) : { status: "unknown" };
+        return { sentModel: modelId(sentModel), binding, occurredAt: at, usageHistoryLink: "unverified" };
       });
     },
     observeResponse(value) {
       if (value.redirected) {
         finish("uncertain", "transport_error");
+        onOpaqueDispatch();
         return;
       }
-      response = value;
+      onResponse(value);
       write("acknowledge", { source: "transport", providerAccepted: "unknown", httpStatus: value.status });
       if (!value.ok) finish("closed", "provider_error");
     },
-    matches(value) { return !finished && response === value; },
+    errorBody(text) {
+      try {
+        const value = JSON.parse(text);
+        if (!value?.error) return;
+        const returnedModel = modelId(value.model);
+        if (returnedModel) write("observeReturnedModel", { returnedModel });
+        const measured = normalizeUsage(value.usage);
+        if (measured) write("recordUsage", {
+          usage: { ...measured, quality: "measured", source: "provider", completeness: "partial" },
+        });
+      } catch {
+        // Only normalized metadata from an already consumed error body is evidence.
+      }
+    },
     failure(outcome) {
       if (!submitted) finish("not_sent", outcome === "transport_error" ? "internal_error" : outcome);
       else finish("uncertain", outcome);
@@ -162,7 +176,9 @@ export function createOpenAiDirectAttemptPilot({ openDb = () => getAdapterSync()
   let pendingGap;
   const instanceId = randomUUID();
 
-  function prepare(requestId, receivedAt, requestedModel, { connectionId, sentModel }) {
+  function prepare(requestId, receivedAt, requestedModel, {
+    connectionId, sentModel, purpose, submissionCause, previousAttemptId, onResponse, onOpaqueDispatch,
+  }) {
     let epoch = current;
     let version;
     const attemptId = randomUUID();
@@ -190,7 +206,7 @@ export function createOpenAiDirectAttemptPilot({ openDb = () => getAdapterSync()
       if (current?.db !== db) {
         epoch = { db, id: randomUUID(), repo: createAttemptRegistryRepository(db, { now }) };
         epoch.repo.openEpoch({
-          id: epoch.id, instanceId, instrumentationVersion: "openai-direct-v1", route: ROUTE, operation: "chat",
+          id: epoch.id, instanceId, instrumentationVersion: "openai-direct-v2", route: ROUTE, operation: "chat",
           transport: "http", barrierCertified: false, openedAt: now(),
         });
         current = epoch;
@@ -199,7 +215,7 @@ export function createOpenAiDirectAttemptPilot({ openDb = () => getAdapterSync()
       const at = now();
       version = epoch.repo.prepare({
         request: { id: requestId, route: ROUTE, requestedModel: modelId(requestedModel), receivedAt },
-        attempt: { id: attemptId, epochId: epoch.id, provider: "openai", connectionId, purpose: "primary" },
+        attempt: { id: attemptId, epochId: epoch.id, provider: "openai", connectionId, purpose, previousAttemptId, submissionCause },
         eventId: randomUUID(), occurredAt: at, knownAt: at,
       }).version;
     } catch {
@@ -217,7 +233,7 @@ export function createOpenAiDirectAttemptPilot({ openDb = () => getAdapterSync()
         }).version;
       } catch { gap(); }
     }
-    return attemptObserver({ write, now, db: epoch.db, connectionId, sentModel });
+    return { id: attemptId, observer: attemptObserver({ write, now, db: epoch.db, connectionId, sentModel, onResponse, onOpaqueDispatch }) };
   }
 
   return function begin() {
@@ -226,10 +242,29 @@ export function createOpenAiDirectAttemptPilot({ openDb = () => getAdapterSync()
     const receivedAt = now();
     return {
       forModel(requestedModel) {
-        let observer;
+        let previousAttemptId = null;
+        const responses = new WeakMap();
         return {
-          prepare(details) { return observer = prepare(requestId, receivedAt, requestedModel, details); },
-          current() { return observer; },
+          skip() { previousAttemptId = null; },
+          forResponse(response) { return responses.get(response); },
+          execution(cause) {
+            let currentObserver;
+            return {
+              skip() { previousAttemptId = null; currentObserver = null; },
+              current() { return currentObserver; },
+              prepare(details, submissionCause = cause) {
+                const purpose = !submissionCause ? "primary" : submissionCause === "connection_fallback" ? "fallback" : "retry";
+                const attempt = prepare(requestId, receivedAt, requestedModel, {
+                  ...details, purpose, submissionCause, previousAttemptId,
+                  onResponse: response => responses.set(response, attempt.observer),
+                  onOpaqueDispatch: () => { previousAttemptId = null; },
+                });
+                previousAttemptId = attempt?.id ?? null;
+                currentObserver = attempt?.observer;
+                return currentObserver;
+              },
+            };
+          },
         };
       },
     };

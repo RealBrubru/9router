@@ -19,7 +19,7 @@ A direção de produto combina gateway e roteamento inteligente, políticas de a
 
 O saldo indicativo de franquia informa o operador com a janela, as hipóteses e as lacunas que sustentam o cálculo. A API administrativa disponibiliza a visão diagnóstica por organização e grupo. A autorização de consumo terá política própria, decisão por tentativa e reserva atômica. [Contrato da API de conciliação](QUOTA-RECONCILIATION.md#api-administrativa-de-conciliação)
 
-O Attempt Registry preserva identidade, estados e evidências de consumo em metadados operacionais independentes do conteúdo das conversas. O piloto OpenAI direto usa Observation, sinaliza lacunas causadas por falhas de registro e fica desativado por padrão. Retries, cobertura demonstrável e uso pela conciliação têm etapas próprias. [Attempt Registry](ATTEMPT-REGISTRY.md)
+O Attempt Registry preserva identidade, causalidade, estados e evidências de consumo em metadados operacionais independentes do conteúdo das conversas. O piloto OpenAI direto usa Observation e fica desativado por padrão. Registra reenvios observáveis e sinaliza lacunas de registro ou causalidade. Cobertura demonstrável e integração com a conciliação têm etapas próprias. [Attempt Registry](ATTEMPT-REGISTRY.md)
 
 ## Como trabalhamos
 

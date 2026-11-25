@@ -313,6 +313,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Use shared chatCore
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    const observeAttempts = provider === "openai" && refreshedCredentials.authType === "apikey" && refreshedCredentials.apiKey;
+    if (!observeAttempts) attemptPilot?.skip();
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
@@ -320,8 +322,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       log,
       clientRawRequest,
       connectionId: credentials.connectionId,
-      attemptPilot: provider === "openai" && excludeConnectionIds.size === 0 &&
-        refreshedCredentials.authType === "apikey" && refreshedCredentials.apiKey ? attemptPilot : null,
+      attemptPilot: observeAttempts ? attemptPilot : null,
+      attemptCause: excludeConnectionIds.size > 0 ? "connection_fallback" : undefined,
       userAgent,
       apiKey,
       ccFilterNaming: !!chatSettings.ccFilterNaming,
