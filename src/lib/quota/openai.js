@@ -1,5 +1,6 @@
 import { QuotaCollectionError } from "./errors.js";
 import { normalizeQuotaQuery, quotaBucketWidth } from "./query.js";
+import { setTimeout as delay } from "node:timers/promises";
 
 const ENDPOINTS = {
   usage: "/v1/organization/usage/completions",
@@ -111,8 +112,24 @@ function httpError(response, now) {
   return new QuotaCollectionError("http_error", Number.isInteger(status) ? status : null);
 }
 
-async function requestPage(fetchImpl, url, credentials, timeoutMs, now) {
+async function cancellable(run, signal) {
+  if (!signal) return run();
+  if (signal.aborted) throw new QuotaCollectionError("cancelled");
+  let abort;
+  const stopped = new Promise((_, reject) => {
+    abort = () => reject(new QuotaCollectionError("cancelled"));
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    return await Promise.race([run(), stopped]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
+async function requestPage(fetchImpl, url, credentials, timeoutMs, now, signal) {
   const controller = new AbortController();
+  const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   let timer;
   const deadline = new Promise((_, reject) => {
     timer = setTimeout(() => {
@@ -127,7 +144,7 @@ async function requestPage(fetchImpl, url, credentials, timeoutMs, now) {
         response = await fetchImpl(url, {
           method: "GET",
           redirect: "error",
-          signal: controller.signal,
+          signal: requestSignal,
           headers: {
             Authorization: `Bearer ${credentials.apiKey}`,
             "OpenAI-Organization": credentials.organizationId,
@@ -148,7 +165,7 @@ async function requestPage(fetchImpl, url, credentials, timeoutMs, now) {
         throw invalid();
       }
     };
-    return await Promise.race([request(), deadline]);
+    return await cancellable(() => Promise.race([request(), deadline]), signal);
   } finally {
     clearTimeout(timer);
   }
@@ -158,7 +175,7 @@ export function createOpenAIQuotaAdapter({
   resolveCredential,
   fetchImpl = globalThis.fetch,
   now = Date.now,
-  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  sleep = (ms, signal) => delay(ms, undefined, { signal }),
   timeoutMs = 10_000,
   maxRetries = 2,
   maxPages = 200,
@@ -169,34 +186,35 @@ export function createOpenAIQuotaAdapter({
       ![timeoutMs, maxPages, backoffMs, maxRetryDelayMs].every(value => count(value) && value > 0 && value <= 2_147_483_647) ||
       !count(maxRetries) || maxRetries > 5) throw new TypeError("Invalid OpenAI quota adapter options");
 
-  async function fetchPage(url, credentials) {
+  async function fetchPage(url, credentials, signal) {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await requestPage(fetchImpl, url, credentials, timeoutMs, now);
+        return await requestPage(fetchImpl, url, credentials, timeoutMs, now, signal);
       } catch (err) {
         const retryable = ["timeout", "transport", "rate_limited"].includes(err.code) ||
           (err.status >= 500 && err.status <= 599);
         if (!retryable || attempt >= maxRetries || err.retryAfterMs > maxRetryDelayMs) throw err;
         try {
-          await sleep(Math.max(err.retryAfterMs ?? 0, Math.min(maxRetryDelayMs, backoffMs * 2 ** attempt)));
+          const wait = Math.max(err.retryAfterMs ?? 0, Math.min(maxRetryDelayMs, backoffMs * 2 ** attempt));
+          await cancellable(() => signal ? sleep(wait, signal) : sleep(wait), signal);
         } catch {
-          throw new QuotaCollectionError("transport");
+          throw new QuotaCollectionError(signal?.aborted ? "cancelled" : "transport");
         }
       }
     }
   }
 
   return {
-    async collect({ organizationId, credentialRef, ...input }) {
+    async collect({ organizationId, credentialRef, signal, ...input }) {
       const query = normalizeQuotaQuery(input);
       if (typeof organizationId !== "string" || !/^[A-Za-z0-9_-]+$/.test(organizationId) ||
           typeof credentialRef !== "string" || !credentialRef) throw new QuotaCollectionError("configuration");
 
       let apiKey;
       try {
-        apiKey = await resolveCredential(credentialRef);
+        apiKey = await cancellable(() => resolveCredential(credentialRef), signal);
       } catch {
-        throw new QuotaCollectionError("configuration");
+        throw new QuotaCollectionError(signal?.aborted ? "cancelled" : "configuration");
       }
       if (typeof apiKey !== "string" || !/^[A-Za-z0-9_-]+$/.test(apiKey) || organizationId.includes(apiKey)) {
         throw new QuotaCollectionError("configuration");
@@ -214,7 +232,7 @@ export function createOpenAIQuotaAdapter({
       const buckets = [];
       const cursors = new Set();
       for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
-        const page = await fetchPage(new URL(url), { organizationId, apiKey });
+        const page = await fetchPage(new URL(url), { organizationId, apiKey }, signal);
         if (!record(page) || page.object !== "page" || !Array.isArray(page.data) ||
             typeof page.has_more !== "boolean") throw invalid();
         buckets.push(...page.data.map(bucket => normalizeBucket(bucket, query, apiKey)));

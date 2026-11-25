@@ -21,7 +21,7 @@ O detalhamento da homologação está no [runbook](RUNBOOK.md#homologação-inic
 
 | Etapa | Entrega | Situação |
 | --- | --- | --- |
-| 7.1.1 — Quota Collector | Coleta passiva por organização, com SQLite e API interna de leitura | Experimento com a OpenAI concluído. Proposta técnica em revisão. |
+| 7.1.1 — Quota Collector | Coleta passiva por organização, com SQLite e API interna de leitura | Adaptador e persistência consolidados na branch de desenvolvimento. Agendador e API interna em revisão. |
 | 7.1.2 — Quota Reconciliation | Conciliar uso oficial, local, externo e requisições em andamento por janela e escopo | Planejada. Depende do coletor e de fixtures de sobreposição e defasagem. |
 | 7.1.3 — Quota Dashboard | Acompanhar franquias, configurar grupos e mostrar origem, cobertura e atualidade | Planejada. A configuração e a visualização dos snapshots podem começar após a coleta. Exibir saldo quando a conciliação o sustentar. |
 | 7.1.4 — Quota Enforcement | Aplicar franquias na elegibilidade por conexão e no Smart Router | Planejada. Depende de conciliação, reservas e elegibilidade em retries, combos e fallbacks. |

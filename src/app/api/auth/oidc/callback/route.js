@@ -74,6 +74,7 @@ export async function GET(request) {
     clearOidcCookies(cookieStore);
     await setDashboardAuthCookie(cookieStore, request, {
       oidc: true,
+      oidcIssuer: payload.iss || null,
       oidcSub: payload.sub || null,
       oidcEmail: pickOidcEmail(payload) || null,
       oidcName: pickOidcDisplayName(payload),

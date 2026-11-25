@@ -13,10 +13,15 @@ const isIdentifier = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,160
 function normalizeConfig({
   groups = [], renewalTime = "00:00", timeZone = "UTC", usageIntervalMs = 60_000,
   costsIntervalMs = 3_600_000, usageStaleAfterMs = 300_000, costsStaleAfterMs = 7_200_000,
-  safetyMargin = 0.10,
+  safetyMargin = 0.10, usageLookbackDays = 1, costsLookbackDays = 7,
+  minuteEnabled = false, minuteIntervalMs = 60_000, minuteLookback = 10, oidcReaders = [],
 } = {}) {
   if (typeof timeZone !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(renewalTime) ||
-      ![usageIntervalMs, costsIntervalMs, usageStaleAfterMs, costsStaleAfterMs].every(value => isTime(value) && value > 0) ||
+      ![usageIntervalMs, costsIntervalMs, usageStaleAfterMs, costsStaleAfterMs, minuteIntervalMs].every(value => isTime(value) && value > 0) ||
+      ![usageLookbackDays, costsLookbackDays].every(value => isTime(value) && value <= 30) ||
+      !isTime(minuteLookback) || minuteLookback < 1 || minuteLookback > 120 || typeof minuteEnabled !== "boolean" ||
+      !Array.isArray(oidcReaders) || oidcReaders.some(reader => typeof reader?.issuer !== "string" ||
+        !reader.issuer || typeof reader.subject !== "string" || !reader.subject) ||
       !Number.isFinite(safetyMargin) || safetyMargin < 0 || safetyMargin >= 1 || !Array.isArray(groups)) {
     throw new TypeError("Invalid quota organization config");
   }
@@ -48,6 +53,8 @@ function normalizeConfig({
   return {
     groups: classifiedGroups, renewalTime, timeZone, usageIntervalMs, costsIntervalMs,
     usageStaleAfterMs, costsStaleAfterMs, safetyMargin,
+    usageLookbackDays, costsLookbackDays, minuteEnabled, minuteIntervalMs, minuteLookback,
+    oidcReaders: oidcReaders.map(({ issuer, subject }) => ({ issuer, subject })),
   };
 }
 
@@ -78,8 +85,9 @@ function gapsInWindow(window, snapshot) {
   let cursor = window.start;
   if (snapshot) {
     for (const bucket of snapshot.buckets) {
-      const start = Math.max(bucket.start, snapshot.window.start, window.start);
-      const end = Math.min(bucket.end, snapshot.window.end, window.end);
+      const observed = bucket.observedWindow ?? snapshot.window;
+      const start = Math.max(bucket.start, observed.start, window.start);
+      const end = Math.min(bucket.end, observed.end, window.end);
       if (end <= start) continue;
       if (start > cursor) gaps.push({ start: cursor, end: start });
       cursor = Math.max(cursor, end);
@@ -94,18 +102,38 @@ function decodeBucket(bucket) {
   return {
     start: bucket.bucketStart, end: bucket.bucketEnd, rows,
     collectedAt: bucket.collectedAt, observedWindow: window, dataAsOf,
+    observationId: bucket.collectionId,
   };
 }
 
 export function createQuotaRepository(db, { now = Date.now } = {}) {
+  const scheduleScope = "quotaSchedule";
+  const parseOrganization = row => ({ ...row, enabled: row.enabled === 1, config: normalizeConfig(JSON.parse(row.config)) });
+
   function getOrganization(id) {
     const row = db.get("SELECT * FROM quotaOrganizations WHERE id = ?", [id]);
-    return row ? { ...row, enabled: row.enabled === 1, config: JSON.parse(row.config) } : null;
+    return row ? parseOrganization(row) : null;
+  }
+
+  function listOrganizations() {
+    return db.all("SELECT * FROM quotaOrganizations ORDER BY id").map(parseOrganization);
+  }
+
+  function readSchedule(organizationId, source, resolution) {
+    const row = db.get("SELECT value FROM kv WHERE scope = ? AND key = ?",
+      [scheduleScope, JSON.stringify([organizationId, source, resolution])]);
+    return row ? JSON.parse(row.value) : null;
+  }
+
+  function writeSchedule(organizationId, source, resolution, state) {
+    db.run(`INSERT INTO kv(scope, key, value) VALUES (?, ?, ?)
+      ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`,
+    [scheduleScope, JSON.stringify([organizationId, source, resolution]), JSON.stringify(state)]);
   }
 
   function putOrganization({ id, provider, externalId, credentialRef, enabled = false, config }) {
     if (![id, provider, externalId].every(isIdentifier) || typeof enabled !== "boolean" ||
-        typeof credentialRef !== "string" || !/^ref:[A-Za-z0-9_.-]{1,120}$/.test(credentialRef) ||
+        typeof credentialRef !== "string" || !/^ref:[A-Za-z0-9_-][A-Za-z0-9_.-]{0,119}$/.test(credentialRef) ||
         looksLikeOpenAISecret(credentialRef)) {
       throw new TypeError("Invalid quota organization");
     }
@@ -191,8 +219,9 @@ export function createQuotaRepository(db, { now = Date.now } = {}) {
     });
   }
 
-  async function collect(organizationId, input, adapter) {
+  async function collect(organizationId, input, adapter, { signal } = {}) {
     const query = normalizeQuotaQuery(input);
+    if (signal?.aborted) throw new QuotaCollectionError("cancelled");
     const organization = getOrganization(organizationId);
     if (!organization?.enabled) throw new QuotaCollectionError("configuration");
     const key = [organizationId, query.source, query.scope];
@@ -203,7 +232,9 @@ export function createQuotaRepository(db, { now = Date.now } = {}) {
     try {
       const observation = await adapter.collect({
         ...query, organizationId: organization.externalId, credentialRef: organization.credentialRef,
+        signal,
       });
+      if (signal?.aborted) throw new QuotaCollectionError("cancelled");
       assertObservation(observation, query);
       const finished = { ...attempt, finishedAt: now() };
       if (!observation.buckets.length) {
@@ -217,6 +248,7 @@ export function createQuotaRepository(db, { now = Date.now } = {}) {
       }
       return { outcome: "success", bucketCount: observation.buckets.length };
     } catch (err) {
+      if (signal?.aborted) throw new QuotaCollectionError("cancelled");
       const error = err instanceof QuotaCollectionError ? err : new QuotaCollectionError("collection_failed");
       try {
         recordAttempt(key, {
@@ -233,7 +265,7 @@ export function createQuotaRepository(db, { now = Date.now } = {}) {
     }
   }
 
-  function readSnapshot(organizationId, input) {
+  function readSnapshot(organizationId, input, { history = false } = {}) {
     const query = normalizeQuotaQuery(input);
     const window = { start: query.start, end: query.end };
     const key = [organizationId, query.source, query.scope];
@@ -247,7 +279,7 @@ export function createQuotaRepository(db, { now = Date.now } = {}) {
       let lastSuccess = null;
       if (success) {
         const { collectionId, ...metadata } = success;
-        const buckets = db.all(`SELECT bucketStart, bucketEnd, collectedAt, data FROM quotaBuckets
+        const buckets = history ? [] : db.all(`SELECT bucketStart, bucketEnd, collectedAt, collectionId, data FROM quotaBuckets
           WHERE organizationId = ? AND source = ? AND scope = ? AND collectionId = ?
           ORDER BY bucketStart`, [...key, collectionId]);
         lastSuccess = {
@@ -255,25 +287,34 @@ export function createQuotaRepository(db, { now = Date.now } = {}) {
           buckets: buckets.map(decodeBucket),
         };
       }
-      const gaps = gapsInWindow(window, lastSuccess);
+      const observations = history ? listObservedBuckets(organizationId, query).filter(bucket =>
+        bucket.observedWindow.start < window.end && bucket.observedWindow.end > window.start).map(bucket => ({
+        ...bucket, omitted: Boolean(success && bucket.observationId !== success.collectionId &&
+          bucket.start < success.window.end && bucket.end > success.window.start),
+      })) : lastSuccess?.buckets;
+      const covered = observations?.filter(bucket => !bucket.omitted);
+      const gaps = gapsInWindow(window, covered ? { buckets: covered } : null);
       const hasObservation = gaps.length !== 1 || gaps[0].start !== window.start || gaps[0].end !== window.end;
       const staleAfterMs = organization.config[query.source === "usage" ? "usageStaleAfterMs" : "costsStaleAfterMs"];
       const failedInWindow = lastAttempt && lastAttempt.outcome !== "success" &&
         lastAttempt.window.start < window.end && lastAttempt.window.end > window.start;
       const status = !hasObservation ? "unknown"
-        : failedInWindow || now() - lastSuccess.collectedAt >= staleAfterMs ? "stale" : "valid";
+        : failedInWindow || covered.some(bucket => now() - bucket.collectedAt >= staleAfterMs) ? "stale" : "valid";
       const coverage = !hasObservation ? "missing" : gaps.length ? "partial" : "full";
-      return { status, coverage, window, gaps, lastAttempt, lastSuccess };
+      return { status, coverage, window, gaps, lastAttempt, lastSuccess, ...(history ? { observations } : {}) };
     });
   }
 
   function listObservedBuckets(organizationId, input) {
     const query = normalizeQuotaQuery(input);
-    return db.all(`SELECT bucketStart, bucketEnd, collectedAt, data FROM quotaBuckets
+    return db.all(`SELECT bucketStart, bucketEnd, collectedAt, collectionId, data FROM quotaBuckets
       WHERE organizationId = ? AND source = ? AND scope = ? AND bucketStart < ? AND bucketEnd > ?
       ORDER BY bucketStart`, [organizationId, query.source, query.scope, query.end, query.start])
       .map(decodeBucket);
   }
 
-  return { putOrganization, bindConnection, getConnectionBinding, classifyModel, collect, readSnapshot, listObservedBuckets };
+  return {
+    getOrganization, listOrganizations, putOrganization, bindConnection, getConnectionBinding, classifyModel,
+    collect, readSnapshot, listObservedBuckets, readSchedule, writeSchedule,
+  };
 }

@@ -10,5 +10,10 @@ export async function register() {
 
     const { startModelCatalogSync } = await import("@/lib/modelCatalog/sync.js");
     startModelCatalogSync();
+
+    if (process.env.QUOTA_COLLECTOR_ENABLED === "true") {
+      const { startQuotaCollector } = await import("@/lib/quota/runtime.js");
+      void startQuotaCollector();
+    }
   }
 }
