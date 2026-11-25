@@ -2,7 +2,7 @@
 
 A investigação **7.1.2a** confirmou que o histórico local registra consumo na finalização, sem identidade durável por tentativa. Os buckets administrativos têm identidade, escopo e revisão. O adaptador OpenAI atual deixa a marca de completude nula. A entrega **7.1.2b** calcula uma indicação a partir de dados normalizados e evidências fornecidas pelo chamador. [Histórico local](../../src/lib/db/repos/usageRepo.js#L249) · [Snapshots do Collector](../../src/lib/db/repos/quotaRepo.js#L268) · [Adaptador OpenAI](../../src/lib/quota/openai.js#L240)
 
-A função é pura. A etapa **7.1.2b+** adapta os dados locais. A **7.1.2b++** expõe a visão diagnóstica na API administrativa. O registro de tentativas, a homologação da coleta em granularidade de minuto e o controle de envio têm etapas próprias. [Motor](../../src/lib/quota/reconciliation.js) · [Fixtures](../../tests/unit/quota-reconciliation.test.js) · [Roadmap](ROADMAP.md#incrementos-do-quota-manager)
+A função é pura. A etapa **7.1.2b+** adapta os dados locais. A **7.1.2b++** expõe a visão diagnóstica na API administrativa. A persistência do Attempt Registry está em revisão isolada. A integração com a conciliação, a homologação da coleta em granularidade de minuto e o controle de envio têm etapas próprias. [Motor](../../src/lib/quota/reconciliation.js) · [Attempt Registry](ATTEMPT-REGISTRY.md) · [Roadmap](ROADMAP.md#incrementos-do-quota-manager)
 
 ## Contrato de entrada
 

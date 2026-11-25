@@ -9,6 +9,7 @@
 - **Integridade do uso.** Usar o consumo informado como fonte prioritária. Preservar estimativas com origem identificável no JSON existente. Manter a consolidação de eventos reais parciais e validar a retirada da margem de contexto com clientes CLI na homologação.
 - **Nome do futuro projeto independente.** PipoRouter, com posicionamento Open Source AI Infrastructure e slogan “Your AI. Your resources. Your rules.”. Histórico, licenças e atribuições ao upstream fazem parte da transição planejada. [Direção estratégica](PROJECT.md#direção-para-um-projeto-independente)
 - **Conciliação passiva.** O saldo indicativo preserva a janela, as hipóteses e a qualidade das informações. A futura autorização de envio exige decisão própria por tentativa, organização, política e janela, vinculada à reserva atômica. [Contrato de conciliação](QUOTA-RECONCILIATION.md)
+- **Attempt Registry.** Propagar contexto explícito e registrar na fronteira semântica do envio. Recuperar somente com evidência de que a instância encerrou. A primeira integração usará Observation. Required e a retenção configurável seguem no backlog. [Persistência e recuperação](ATTEMPT-REGISTRY.md)
 
 ## Fluxo proposto para sincronização
 
@@ -66,7 +67,7 @@ Permitir políticas de uso restritas à franquia da assinatura, considerando jan
 | Dynamic Pricing Discovery | Investigar fontes oficiais e o Model Cost Map do LiteLLM. Reutilizar a API e a página de preços para atualização automática e edição manual. Registrar fonte, vigência, atualidade e preços genéricos ou desconhecidos. Preservar custos históricos e adaptar a precisão monetária da interface. |
 | Dynamic Free Model Discovery | Identificar ofertas gratuitas e seus provedores, limites, restrições, disponibilidade e desempenho. Distinguir gratuidade pública de franquias da conta. |
 | Dynamic Discount Discovery | Detectar preços promocionais, condições, vigência, alterações e encerramentos. Expor os dados ao Smart Router. |
-| Granular Observability | Configurar níveis, metadados e conteúdo separadamente, por aplicação ou API key. Definir retenção e proteção de dados sensíveis, diagnosticar decisões de roteamento e exibir a configuração efetiva. Avisar ou desabilitar controles sobrescritos pelo ambiente. |
+| Granular Observability | Configurar níveis, metadados e conteúdo separadamente, por aplicação ou API key. Definir retenção e proteção de dados sensíveis, diagnosticar decisões de roteamento e exibir a configuração efetiva. Avisar ou desabilitar controles sobrescritos pelo ambiente. Incluir Request Lifecycle Dashboard com a matriz de cobertura do registro de tentativas. |
 | Timezone Management | Configurar o fuso de apresentação e aplicá-lo de forma consistente. Manter separado o fuso oficial de renovação de cada franquia. Investigar a aparente apresentação em UTC nos gráficos do Overview. |
 
 A descoberta atualiza o catálogo. O envio de dados exige autorização explícita para a conexão e a aplicação.

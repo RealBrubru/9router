@@ -25,8 +25,11 @@ O detalhamento da homologação está no [runbook](RUNBOOK.md#homologação-inic
 | 7.1.2a — Investigação | Inventariar o consumo local e remoto e definir a estratégia de conciliação | Concluída e aprovada. |
 | 7.1.2b — Cálculo passivo | Motor puro, saldo indicativo corrente ou histórico, qualidade da observação e avaliação pelo conhecimento disponível | Aprovado e consolidado localmente. [Contrato](QUOTA-RECONCILIATION.md) |
 | 7.1.2b+ — Reconciliation Read Service | Adaptar a leitura dos snapshots dimensionais e do histórico local, com cobertura e proveniência explícitas | Aprovado e consolidado localmente. [Serviço de leitura](QUOTA-RECONCILIATION.md#serviço-interno-de-leitura) |
-| 7.1.2b++ — API administrativa de conciliação | Expor diagnósticos de conciliação por organização e grupo, com sessão administrativa e leitura local | Implementação e testes offline em revisão. [Contrato da API](QUOTA-RECONCILIATION.md#api-administrativa-de-conciliação) |
-| 7.1.2c — Registro de tentativas | Persistir identidade, vínculo, estados, janelas e origem do uso | Planejada. |
+| 7.1.2b++ — API administrativa de conciliação | Expor diagnósticos de conciliação por organização e grupo, com sessão administrativa e leitura local | Aprovada e consolidada localmente. [Contrato da API](QUOTA-RECONCILIATION.md#api-administrativa-de-conciliação) |
+| 7.1.2c1 — Especificação do Attempt Registry | Inventariar os despachos e definir identidade, estados e cobertura | Concluída e aprovada. |
+| 7.1.2c2 — Migration, repositório e estados | Persistir tentativas, eventos e épocas de cobertura | Implementação e testes SQLite isolados em revisão. [Attempt Registry](ATTEMPT-REGISTRY.md) |
+| 7.1.2c3 — Integração controlada | Instrumentar o envio e o encerramento nos caminhos de inferência | Planejada, inicialmente em Observation. |
+| 7.1.2c4 — Cobertura na conciliação | Usar o corte de conhecimento e avaliar cobertura local demonstrável | Planejada. |
 | 7.1.2d — Conciliação fina | Avaliar buckets de minuto, revisões, chaves compartilhadas e virada em observação | Planejada. Coleta por minuto depende de homologação autorizada. |
 | 7.1.3 — Quota Dashboard | Acompanhar franquias, configurar grupos e mostrar origem, cobertura e atualidade | Planejada. A configuração e a visualização dos snapshots podem começar após a coleta. Exibir saldo quando a conciliação o sustentar. |
 | 7.1.4 — Quota Enforcement | Aplicar franquias na elegibilidade por conexão e no Smart Router | Planejada. Exige decisão explícita por tentativa, organização, política e janela, com reserva atômica. Depende de conciliação e de elegibilidade em retries, combos e fallbacks. |
@@ -38,7 +41,8 @@ Os três primeiros incrementos preservam o roteamento atual. A etapa 7.1.1 encer
 - **Catálogo e preços.** Dynamic Model Discovery, Dynamic Pricing Discovery, Dynamic Free Model Discovery e Dynamic Discount Discovery.
 - **Pricing UI e precisão monetária.** Oferecer edição manual com fonte, vigência e precisão adaptativa. Em Pricing Settings, investigar modal transparente, ausência de acesso pela navegação normal, lista restrita a GH e TOKENROUTER e texto da fórmula desatualizado. Verificar com fixtures a diferença entre a API de listagem e a resolução de preços por modelo. [Página](../../src/app/dashboard/settings/pricing/page.js) · [Repositório de preços](../../src/lib/db/repos/pricingRepo.js)
 - **Free Tier Verification.** Verificação experimental da elegibilidade no backlog de Dynamic Free Model Discovery. [Procedimento proposto](DECISIONS.md#verificação-experimental-de-elegibilidade)
-- **Diagnóstico e apresentação.** Granular Observability e Timezone Management.
+- **Diagnóstico e apresentação.** Granular Observability, Request Lifecycle Dashboard com matriz de cobertura e Timezone Management.
+- **Operação do Attempt Registry.** Política configurável de falha, incluindo a futura opção Required, e retenção configurável de metadados. [Propostas](ATTEMPT-REGISTRY.md#integração-e-backlog)
 
 Os escopos estão nas [propostas de descoberta e interface](DECISIONS.md#propostas-de-descoberta-e-interface).
 

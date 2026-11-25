@@ -71,7 +71,8 @@ describe("quota SQLite repository", () => {
 
   it("creates the new schema, reopens it and keeps only the credential reference", async () => {
     await openRepo();
-    expect(db.get("SELECT value FROM _meta WHERE key = 'schemaVersion'").value).toBe("2");
+    const { latestVersion } = await import("@/lib/db/migrations/index.js");
+    expect(db.get("SELECT value FROM _meta WHERE key = 'schemaVersion'").value).toBe(String(latestVersion()));
     expect(() => repo.putOrganization({ ...fixtureOrg, credentialRef: adminCredential })).toThrow();
     expect(() => repo.putOrganization({ ...fixtureOrg, credentialRef: "ref:sk-admin-fixture" })).toThrow();
     repo.putOrganization(fixtureOrg);
@@ -90,12 +91,13 @@ describe("quota SQLite repository", () => {
 
   it("upgrades an actual legacy-shaped file and retains a usable pre-change backup", async () => {
     const { DatabaseSync } = await import("node:sqlite");
-    const { TABLES, buildCreateTableSql } = await import("@/lib/db/schema.js");
+    const { TABLES, buildCreateTableSql, SCHEMA_VERSION } = await import("@/lib/db/schema.js");
+    const { latestVersion } = await import("@/lib/db/migrations/index.js");
     const { DATA_FILE, BACKUPS_DIR, ensureDirs } = await import("@/lib/db/paths.js");
     ensureDirs();
     const old = new DatabaseSync(DATA_FILE);
     for (const [name, def] of Object.entries(TABLES)) {
-      if (!name.startsWith("quota")) old.exec(buildCreateTableSql(name, def));
+      if (!/^(quota|inference)/.test(name)) old.exec(buildCreateTableSql(name, def));
     }
     old.exec(`INSERT INTO _meta(key,value) VALUES('schemaVersion','1'),('backupSchemaVersion','2');
       INSERT INTO usageHistory(timestamp,promptTokens,completionTokens) VALUES('fixture', 32, 9);
@@ -104,14 +106,15 @@ describe("quota SQLite repository", () => {
     old.close();
 
     await openRepo();
-    expect(db.get("SELECT value FROM _meta WHERE key = 'backupSchemaVersion'").value).toBe("3");
-    expect(db.get("SELECT value FROM _meta WHERE key = 'schemaVersion'").value).toBe("2");
+    expect(db.get("SELECT value FROM _meta WHERE key = 'backupSchemaVersion'").value).toBe(String(SCHEMA_VERSION));
+    expect(db.get("SELECT value FROM _meta WHERE key = 'schemaVersion'").value).toBe(String(latestVersion()));
     expect(db.all("SELECT sql FROM sqlite_master WHERE name IN ('usageHistory','usageDaily') ORDER BY name")).toEqual(priorUsageSchema);
     expect(db.get("SELECT promptTokens FROM usageHistory").promptTokens).toBe(32);
     expect(db.get("SELECT dateKey FROM usageDaily").dateKey).toBe("fixture");
     repo.putOrganization(fixtureOrg);
 
-    const backupDir = fs.readdirSync(BACKUPS_DIR).find(name => name.startsWith("schema-2-to-3"));
+    const backupPrefix = `schema-2-to-${SCHEMA_VERSION}`;
+    const backupDir = fs.readdirSync(BACKUPS_DIR).find(name => name.startsWith(backupPrefix));
     expect(backupDir).toBeTruthy();
     const restoredPath = path.join(tempDir, "restored.sqlite");
     fs.copyFileSync(path.join(BACKUPS_DIR, backupDir, "data.sqlite"), restoredPath);
@@ -125,7 +128,7 @@ describe("quota SQLite repository", () => {
     await openRepo();
     expect(db.get("SELECT COUNT(*) AS n FROM quotaOrganizations").n).toBe(1);
     expect(db.get("SELECT COUNT(*) AS n FROM usageHistory").n).toBe(1);
-    expect(fs.readdirSync(BACKUPS_DIR).filter(name => name.startsWith("schema-2-to-3"))).toHaveLength(1);
+    expect(fs.readdirSync(BACKUPS_DIR).filter(name => name.startsWith(backupPrefix))).toHaveLength(1);
   });
 
   it("reapplies a query without duplicates and replaces all rows in a revised bucket", async () => {

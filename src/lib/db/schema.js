@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -203,10 +203,96 @@ export const TABLES = {
     },
     primaryKey: "PRIMARY KEY (organizationId, source, scope)",
   },
+  inferenceRequests: {
+    columns: {
+      id: "TEXT PRIMARY KEY NOT NULL",
+      route: "TEXT NOT NULL",
+      requestedModel: "TEXT",
+      receivedAt: "INTEGER NOT NULL CHECK (receivedAt >= 0)",
+    },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_ir_received ON inferenceRequests(receivedAt)"],
+  },
+  inferenceCoverageEpochs: {
+    columns: {
+      id: "TEXT PRIMARY KEY NOT NULL",
+      instanceId: "TEXT NOT NULL",
+      instrumentationVersion: "TEXT NOT NULL",
+      route: "TEXT NOT NULL",
+      operation: "TEXT NOT NULL",
+      transport: "TEXT NOT NULL",
+      barrierCertified: "INTEGER NOT NULL CHECK (barrierCertified IN (0, 1))",
+      openedAt: "INTEGER NOT NULL CHECK (openedAt >= 0)",
+      closedAt: "INTEGER CHECK (closedAt >= openedAt)",
+      gapAt: "INTEGER CHECK (gapAt IS NULL OR (gapAt >= openedAt AND closedAt IS NOT NULL AND gapAt <= closedAt))",
+      gapReason: "TEXT CHECK (gapReason IN ('storage_failure', 'uninstrumented_dispatch', 'owner_exit', 'unknown'))",
+      ownerExitKnownAt: "INTEGER CHECK (ownerExitKnownAt >= openedAt)",
+      ownerExitEvidenceId: "TEXT",
+    },
+    constraints: [
+      "CHECK ((gapAt IS NULL) = (gapReason IS NULL))",
+      "CHECK ((ownerExitKnownAt IS NULL) = (ownerExitEvidenceId IS NULL))",
+    ],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ice_scope ON inferenceCoverageEpochs(instanceId, instrumentationVersion, route, operation, transport, openedAt)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_ice_open ON inferenceCoverageEpochs(instanceId, instrumentationVersion, route, operation, transport) WHERE closedAt IS NULL",
+    ],
+  },
+  inferenceAttempts: {
+    columns: {
+      id: "TEXT PRIMARY KEY NOT NULL",
+      requestId: "TEXT NOT NULL REFERENCES inferenceRequests(id)",
+      epochId: "TEXT NOT NULL REFERENCES inferenceCoverageEpochs(id)",
+      previousAttemptId: "TEXT REFERENCES inferenceAttempts(id)",
+      provider: "TEXT NOT NULL",
+      connectionId: "TEXT",
+      purpose: "TEXT NOT NULL CHECK (purpose IN ('primary', 'retry', 'fallback', 'panel', 'judge', 'classifier', 'continuation', 'probe'))",
+      organizationId: "TEXT",
+      dispatchAt: "INTEGER CHECK (dispatchAt >= 0)",
+      state: "TEXT NOT NULL CHECK (state IN ('prepared', 'not_sent', 'dispatch_possible', 'response_observed', 'in_progress', 'closed', 'uncertain'))",
+      outcome: "TEXT CHECK (outcome IN ('invalid_request', 'cancelled', 'timeout', 'internal_error', 'process_exit', 'completed', 'provider_error', 'provider_cancelled', 'transport_error'))",
+      version: "INTEGER NOT NULL CHECK (version >= 1)",
+    },
+    constraints: [
+      "CHECK (id <> requestId AND (previousAttemptId IS NULL OR previousAttemptId <> id))",
+      "CHECK ((state IN ('not_sent', 'closed', 'uncertain')) = (outcome IS NOT NULL))",
+      "CHECK (state = 'uncertain' OR ((state IN ('prepared', 'not_sent')) = (dispatchAt IS NULL)))",
+      "CHECK (organizationId IS NULL OR dispatchAt IS NOT NULL)",
+    ],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ia_request ON inferenceAttempts(requestId)",
+      "CREATE INDEX IF NOT EXISTS idx_ia_org_dispatch ON inferenceAttempts(organizationId, dispatchAt)",
+      "CREATE INDEX IF NOT EXISTS idx_ia_open_epoch ON inferenceAttempts(epochId) WHERE state IN ('prepared', 'dispatch_possible', 'response_observed', 'in_progress')",
+    ],
+  },
+  inferenceAttemptEvents: {
+    columns: {
+      sequence: "INTEGER PRIMARY KEY AUTOINCREMENT",
+      attemptId: "TEXT NOT NULL REFERENCES inferenceAttempts(id) ON DELETE CASCADE",
+      eventId: "TEXT NOT NULL",
+      version: "INTEGER NOT NULL CHECK (version >= 1)",
+      kind: "TEXT NOT NULL CHECK (kind IN ('prepare', 'dispatch', 'acknowledge', 'in_progress', 'returned_model', 'usage', 'finish', 'recover'))",
+      state: "TEXT NOT NULL CHECK (state IN ('prepared', 'not_sent', 'dispatch_possible', 'response_observed', 'in_progress', 'closed', 'uncertain'))",
+      outcome: "TEXT",
+      occurredAt: "INTEGER NOT NULL CHECK (occurredAt >= 0)",
+      knownAt: "INTEGER NOT NULL CHECK (knownAt >= occurredAt)",
+      recordedAt: "INTEGER NOT NULL CHECK (recordedAt >= knownAt)",
+      details: "TEXT NOT NULL",
+    },
+    constraints: ["UNIQUE(attemptId, eventId)", "UNIQUE(attemptId, version)"],
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_iae_known ON inferenceAttemptEvents(attemptId, knownAt, sequence)"],
+  },
+  inferenceUsageLinks: {
+    columns: {
+      attemptId: "TEXT PRIMARY KEY NOT NULL REFERENCES inferenceAttempts(id) ON DELETE CASCADE",
+      usageHistoryId: "INTEGER NOT NULL UNIQUE REFERENCES usageHistory(id) ON DELETE CASCADE",
+      evidenceId: "TEXT NOT NULL",
+    },
+  },
 };
 
 export function buildCreateTableSql(name, def) {
   const cols = Object.entries(def.columns).map(([k, v]) => `${k} ${v}`);
   if (def.primaryKey) cols.push(def.primaryKey);
+  if (def.constraints) cols.push(...def.constraints);
   return `CREATE TABLE IF NOT EXISTS ${name} (${cols.join(", ")})`;
 }
