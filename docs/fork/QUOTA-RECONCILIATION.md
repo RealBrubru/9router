@@ -1,0 +1,76 @@
+# Quota Reconciliation — cálculo passivo
+
+A investigação **7.1.2a** confirmou que o histórico local registra consumo na finalização, sem identidade durável por tentativa. Os buckets administrativos têm identidade, escopo e revisão. O adaptador OpenAI atual deixa a marca de completude nula. A entrega **7.1.2b** calcula uma indicação a partir de dados normalizados e evidências fornecidas pelo chamador. [Histórico local](../../src/lib/db/repos/usageRepo.js#L249) · [Snapshots do Collector](../../src/lib/db/repos/quotaRepo.js#L268) · [Adaptador OpenAI](../../src/lib/quota/openai.js#L240)
+
+A função é pura e só é chamada pelos testes nesta entrega. A integração de leitura, o registro de tentativas, a observação em granularidade de minuto e o controle de envio têm etapas próprias. [Motor](../../src/lib/quota/reconciliation.js) · [Fixtures](../../tests/unit/quota-reconciliation.test.js) · [Roadmap](ROADMAP.md#incrementos-do-quota-manager)
+
+## Contrato de entrada
+
+`reconcileQuota({ policy, evaluatedAt, knowledgeAt?, localCoverage?, observations?, attempts?, evidence? })` avalia uma organização, grupo, revisão de política e unidade. As listas omitidas começam vazias. Datas são inteiros seguros em **milissegundos desde a época Unix**. Janelas usam `[start, end)`. A integração futura deve converter os segundos do Collector explicitamente.
+
+| Entrada | Campos e semântica |
+| --- | --- |
+| `policy` | `scope` contém `organizationId`, `groupId`, `policyRevision` e `unit`. São obrigatórios `window` da franquia, `knownAt`, `validFrom`, `validTo` (nulo para vigência aberta), `resolution`, `usageScope`, `scale` (0 a 18), `limit`, `safetyMargin` (de 0 inclusive a 1 exclusive), `models` e `excludedModels`. As listas contêm modelos canônicos do grupo e modelos comprovadamente fora dele. |
+| Limiares da política | `maxCollectionAgeMs` define a idade permitida desde a coleta. `maxObservationTailMs` define quanto a janela de referência pode terminar antes da avaliação e ainda ser indicada como corrente. `maxReportingLagMs` define a tolerância para lacunas diante de uma marca de completude informada. Esses parâmetros são independentes, em milissegundos. |
+| `evaluatedAt`, `knowledgeAt` | O primeiro fixa o horizonte temporal do consumo, limitado ao fim da franquia. O segundo fixa até quando os fatos podem ser conhecidos. Por padrão são iguais. `knowledgeAt > evaluatedAt` produz uma reconstrução retrospectiva, sempre identificada na saída. |
+| `localCoverage` | Declaração `{ status, knownAt }`. O estado é `complete`, `partial` ou `unknown` para a janela avaliada. Uma declaração ausente ou posterior ao corte é desconhecida. Uma lista vazia só representa ausência observada de tentativas se a cobertura for completa. |
+| `observations[]` | `id` lógico estável, `revision` inteira crescente, `scope`, `source: "usage"`, `resolution`, `usageScope`, `populationCoverage`, `bucketWindow` nominal, `observedWindow` coberta pelos contadores, `status`, `collectedAt`, `knownAt`, `dataAsOf` (pode ser nulo) e `rows`. A população usa `complete`, `partial` ou `unknown`. O estado da observação é `observed`, `stale` ou `omitted`. Uma observação omitida tem lista vazia e deixa uma lacuna. |
+| `observations[].rows[]` | `id` único na revisão e `amount` normalizado à unidade. Dimensões opcionais ou nulas incluem `model`, `projectId`, `apiKeyId`, `serviceTier` e `attemptId`. `incentive` usa `incentivized`, `not-incentivized` ou `unknown`. `origin` usa `gateway`, `external` ou `unknown`. `keyUse` usa `exclusive`, `shared` ou `unknown`. As três classificações têm padrão `unknown`. |
+| `attempts[]` | `id`, `scope`, `window` de atribuição possível, `knownAt` e `state` entre `observed`, `estimated`, `pending` e `unknown`. `amount` é obrigatório nos dois primeiros estados e ausente ou nulo nos demais. Dimensões e `incentive` seguem a linha remota. Use `serviceTier` local quando a classificação administrativa for conhecida. Um estado sem medição pode trazer `reserved` e `upperBound: { amount, reference }`. |
+| `evidence[]` | `id`, `basis`, `reference`, `attemptId`, `attemptKnownAt`, `observationId`, `revision`, `rowId`, `knownAt` e `amount`. A referência identifica o registro confiável que demonstrou o montante sobreposto. |
+
+### Visibilidade e revisões
+
+- A política deve ser conhecida até o corte e vigente para a janela da franquia. O chamador seleciona a revisão pertinente. Se ela estiver indisponível, o motor retorna indicação nula sem atribuir uso a essa política.
+- A tentativa é identificada por `id`. Seu estado e os fatos associados são selecionados pelo último `knownAt` disponível. A janela da tentativa expressa onde o provedor **pode atribuir** o consumo. O `knownAt` expressa **quando** o gateway conheceu aquele estado, montante, reserva ou limite. O chamador fornece as versões anteriores necessárias para reconstruir o passado, consolida cada tentativa em um único estado por instante e declara a cobertura que consegue demonstrar.
+- Para a resolução principal, cada identidade de bucket mantém o mesmo intervalo nominal, que pode conter várias versões da janela efetivamente observada. A revisão mais alta conhecida até o corte substitui a anterior. Isso permite avanço do bucket aberto, omissões e correções para baixo. Buckets nominais principais são disjuntos. Uma revisão com contadores que cruzam o horizonte avaliado não pode ser recortada nem substituída silenciosamente pela revisão anterior. As outras resoluções são informativas.
+- `collectedAt` registra o fim da coleta. `knownAt` registra quando a observação e todos os seus metadados ficaram disponíveis, inclusive flags de estado se fornecidas. Uma prova só participa depois do seu `knownAt` e fica vinculada à revisão remota e ao estado local exato. Dados posteriores ao corte ficam fora da avaliação contemporânea. Uma reconstrução pode usar conhecimento posterior para o mesmo horizonte.
+- Escopos ou fontes incompatíveis deixam a indicação nula e ficam fora dos subtotais. Campos estruturalmente inválidos geram `TypeError`. A futura integração responde pela origem das provas, pelas identidades estáveis, por linhas remotas disjuntas e pela semântica das classificações e dos limites superiores.
+
+### Sobreposição e unidades
+
+- **`verified-attempt`** exige identidade explícita comum à linha remota e à tentativa local. Pode servir a chaves compartilhadas com essa evidência.
+- **`verified-exclusive-aggregate`** exige uma linha atribuída ao gateway, chave comprovadamente exclusiva para o intervalo e evidência do montante incluído para a tentativa. Contadores iguais, chave igual, idade ou `collectedAt` não demonstram inclusão.
+- Ambas as formas exigem medição local, linha remota incentivada no grupo, modelo, projeto e chave compatíveis e contenção da janela de atribuição no intervalo observado. Um tier administrativo local conhecido também precisa coincidir. A prova deve ter sido conhecida após, ou junto de, suas duas origens.
+- Cada tentativa admite uma dedução consolidada. O motor rejeita provas concorrentes, IDs repetidos, montantes acima do uso local ou remoto e conjuntos cujo total exceda uma linha remota. Uma revisão substituída torna indisponível a prova que a referencia.
+- Montantes são strings decimais exatas. O motor recusa negativos, expoentes, números de ponto flutuante e frações além da escala. A integração normaliza a semântica do provedor. Para OpenAI Usage, o total em tokens usa entrada mais saída. Cache e raciocínio já incluídos ficam fora da soma. `Costs` continua como fonte financeira separada.
+
+## Fórmula e saída
+
+```text
+teto após margem = limite − margem retida
+subtotal considerado = remoto incentivado observado
+                      + (local observado − sobreposição aceita)
+                      + reservas + parcela dos limites superiores acima das reservas
+saldo indicativo = max(0, teto após margem − subtotal considerado)
+excedente indicativo = max(0, subtotal considerado − teto após margem)
+```
+
+A margem retida é `limite × safetyMargin`, arredondada para cima apenas até o menor incremento da unidade. As demais operações são exatas. Para uma tentativa sem medição, reserva e limite superior cobrem a mesma exposição e entram uma vez, pelo maior valor. Estimativas heurísticas aparecem separadamente. Se o limite estiver ausente, sem referência ou for menor que a estimativa, o motor preserva os dados conhecidos e registra a inconsistência ou a lacuna. Uma reserva, por si só, não demonstra um limite superior.
+
+O resultado JSON inclui:
+
+| Campo | Semântica |
+| --- | --- |
+| `indicative` | `amount`, `excess`, `status` (`current`, `historical`, `unknown`), `referenceWindow`, `consideredSubtotal`, `assumptions`, `limitations` e `blockers`. A interface usa o valor calculado pelo motor. |
+| `quality.temporal`, `quality.population` | Cobertura dos intervalos recebidos em relação ao horizonte avaliado, lacunas na janela de referência e abrangência do escopo consultado. |
+| `quality.collection`, `quality.completeness` | Idade e estado da coleta (`recent`, `stale`, `unknown)) e garantia de inclusão de eventos conforme a fonte (`complete`, `partial`, `unknown`). Uma coleta `stale` pode ter, ao mesmo tempo, completude `unknown`. Cada observação preserva seu `dataAsOf`, inclusive nulo. |
+| `quality.local`, `quality.external` | Cobertura local conhecida no corte e risco de consumo externo ainda não reportado. Os valores externos observados e de origem indeterminada são preservados dentro do total incentivado. |
+| `remote`, `local`, `overlap` | Subtotais diagnosticáveis, estados e limites locais, provas aceitas ou rejeitadas e revisões utilizadas. O `consideredSubtotal` no nível principal inclui o uso local conhecido até o horizonte avaliado. O subtotal dentro de `indicative` usa a janela de referência. Sem observação remota utilizável, `remote` e a indicação são nulos. |
+
+**Indicação corrente.** Exige coleta recente, observações coerentes e representativas, cobertura local e ausência de lacunas impeditivas. Se a referência terminar antes do horizonte avaliado, a cauda não observada deve caber em `maxObservationTailMs` e aparece como limitação. Uma observação com consumo reportado pode sustentar a indicação com `dataAsOf: null`. Nesse caso, a saída explicita que só inclui o consumo externo já reportado. Um zero sem confirmação de completude permanece visível como subtotal e não produz indicação.
+
+**Indicação histórica.** Uma coleta defasada, uma reconstrução retrospectiva, uma janela encerrada ou uma cauda acima da tolerância podem fornecer um valor histórico para uma janela de referência coerente. Lacunas materiais dentro dessa referência, escopo ou classificação incompatível, cobertura local insuficiente ou uso potencialmente elegível sem limite superior defensável mantêm `amount: null`. As versões de tentativas que atravessam a renovação podem contribuir com todo o montante possível em cada avaliação independente. A soma dessas avaliações exige resolver a atribuição.
+
+**Limite de responsabilidade.** Um saldo indicativo positivo não autoriza consumo. O futuro serviço de enforcement deverá decidir explicitamente por tentativa, organização, revisão da política e janela, com reserva atômica vinculada à decisão. O motor passivo fornece evidências e hipóteses para essa política. O controle de envio pertence ao serviço de decisão.
+
+### Exemplos sintéticos
+
+Com franquia de 1.000 tokens, margem de 100 e nenhuma sobreposição demonstrada:
+
+| Cenário | Resultado |
+| --- | --- |
+| Coleta recente com `dataAsOf: null`, remoto 600 e local medido 250 | Subtotal 850, indicação corrente de 50 sob a hipótese de consumo externo conforme reportado. |
+| Mesmos números, coleta defasada | Subtotal 850, indicação histórica de 50, com janela de referência e completude ainda desconhecida. |
+| Nova janela sem observação válida | Consumo remoto desconhecido e indicação nula. |
+| Remoto 600, local medido 250 e tentativa pendente com reserva de 40 sem limite superior | Subtotal conhecido de 890 e indicação nula, com a razão `local_without_upper_bound`. |
