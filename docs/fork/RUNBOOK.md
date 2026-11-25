@@ -41,9 +41,27 @@ Para iniciar a homologação manual com dados limpos, use um volume novo e guard
 
 Na rodada manual relatada pelo proprietário, a imagem `realbrubru/9router:dev-7afe9d48` passou com `gpt-6-luna`. Foram validados cadastro da conexão e do modelo, botão Test, JSON com `stream: false`, SSE com um único evento final de uso real ao pedir `include_usage: true`, SSE sem esse evento quando a opção foi omitida, Usage & Analytics e persistência no SQLite. Nas chamadas verificadas, o uso real prevaleceu sem margem de 2.000 tokens ou estimativa prematura.
 
-Em leitura de `usageHistory`, as sete requisições bem-sucedidas somaram **117 tokens de entrada, 129 de saída e 246 no total**. Os 38 tokens de raciocínio já estavam incluídos na saída. O subtotal teórico de **US$ 0,0000762** confere com as tarifas internas da revisão. O registro SSE sem `include_usage` conservou internamente 19 tokens de entrada, 46 de saída e 28 de raciocínio. Faturamento confirmado, elegibilidade à franquia, outros provedores e clientes CLI reais seguem pendentes.
+Em leitura de `usageHistory`, as sete requisições bem-sucedidas somaram **117 tokens de entrada, 129 de saída e 246 no total**. Os 38 tokens de raciocínio já estavam incluídos na saída. O subtotal teórico de **US$ 0,0000762** confere com as tarifas internas da revisão. O registro SSE sem `include_usage` conservou internamente 19 tokens de entrada, 46 de saída e 28 de raciocínio. A rodada administrativa posterior confirmou consumo incentivado no escopo observado. A conciliação com faturamento definitivo e a homologação com outros provedores e clientes CLI reais seguem pendentes.
 
-O modelo tem [capacidades](../../open-sse/providers/capabilities.js#L345) e [tarifas](../../open-sse/providers/pricing.js#L100) no checkout. O [catálogo padrão da OpenAI](../../open-sse/providers/registry/openai.js#L31) ainda exige adicioná-lo como modelo personalizado. A [API de preços](../../src/app/api/pricing/route.js) oferece `GET`, `PATCH` e `DELETE`. A edição de tarifas não foi localizada durante a rodada manual. O código inclui uma [página de preços](../../src/app/dashboard/settings/pricing/page.js) em `/dashboard/settings/pricing`, listada no build, sem atalho encontrado na navegação inspecionada. O acesso direto permanece a verificar.
+O modelo tem [capacidades](../../open-sse/providers/capabilities.js#L345) e [tarifas](../../open-sse/providers/pricing.js#L100) no checkout. O [catálogo padrão da OpenAI](../../open-sse/providers/registry/openai.js#L31) ainda exige adicioná-lo como modelo personalizado. A [API de preços](../../src/app/api/pricing/route.js) oferece `GET`, `PATCH` e `DELETE`. O acesso direto a `/dashboard/settings/pricing` foi confirmado na homologação. As limitações da página estão no [backlog](ROADMAP.md#backlog-sem-ordem-rígida-de-implementação).
+
+### Experimento com a OpenAI Admin Usage API
+
+O proprietário validou `GET /v1/organization/usage/completions` e `GET /v1/organization/costs` com uma Admin API Key **Restricted**, **Usage API Scope: Read** e demais permissões em **None**. Usage aceitou os agrupamentos combinados `model`, `service_tier`, `project_id` e `api_key_id`, além do filtro `api_key_ids`. Chaves distintas no mesmo projeto permitiram separar o consumo de aplicações. Uma inferência com tier `default` apareceu no agregado administrativo como `incentivized-tier`. A classificação do incentivo deve vir da fonte administrativa.
+
+| Snapshot da organização | Entrada | Saída | Total | Requisições |
+| --- | ---: | ---: | ---: | ---: |
+| `gpt-6-luna` | 10.589 | 1.950 | 12.539 | 9 |
+| `gpt-6.1-sol` | 182.075 | 7.867 | 189.942 | 5 |
+| Total | 192.664 | 9.817 | 202.481 | 14 |
+
+Todo o snapshot acima foi classificado como `incentivized-tier`. O total usa entrada mais saída. Leitura e escrita de cache já entram na entrada. No filtro pela chave exclusiva do gateway, os totais coincidiram com o SQLite antes do microteste (`7` chamadas, `117/129/246`) e depois (`8`, `131/134/265`).
+
+O microteste de `14/5` tokens ocorreu entre 15:04:43 e 15:04:45 UTC em 25/11/2026. A consulta, entre 15:06:55 e 15:06:56 UTC, já incluía a chamada no bucket UTC `15:04–15:05` de `1m`. A API também retornou buckets vazios. **131 segundos** é o limite superior observado para essa chamada. A defasagem exata e a distribuição em outras condições seguem desconhecidas.
+
+Na consulta de sete dias de Costs agrupada por `line_item`, observaram-se lançamentos com quantidades positivas e `amount.value` de `0.0 USD`. Entre as categorias da resposta estavam entrada, saída, leitura de cache e escrita de cache, inclusive com retenção de 12 horas. O dia corrente ainda não apareceu em Costs, embora já estivesse em Usage. Preserve a distinção entre custo explicitamente zerado, ausência de lançamento e informação defasada.
+
+O Dashboard oficial mostrou 1 milhão e 10 milhões de tokens diários para os dois grupos e compartilhamento de inputs e outputs em todos os projetos da organização experimental. Esses valores são específicos daquele escopo. A lista de modelos do tooltip estava desatualizada em relação à documentação oficial. Confirme a configuração por organização e registre a fonte da lista de modelos. [Regras oficiais do programa](https://help.openai.com/en/articles/10306912-sharing-feedback-evaluation-and-fine-tuning-data-and-api-inputs-and-outputs-with-openai)
 
 ### Observability e aba Details
 

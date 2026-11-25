@@ -9,6 +9,7 @@ Este fork usa o 9Router como base para um gateway de LLMs com múltiplos provedo
 | [BUGS.md](BUGS.md) | Evidências, reprodução sintética e pendências dos bugs |
 | [DECISIONS.md](DECISIONS.md) | Decisões aprovadas e propostas abertas |
 | [RUNBOOK.md](RUNBOOK.md) | Testes, build ARM64, homologação, deploy e rollback |
+| [QUOTA-COLLECTOR.md](QUOTA-COLLECTOR.md) | Proposta técnica para o primeiro incremento do Quota Manager |
 | [AGENTS.md](../../AGENTS.md) | Instruções permanentes de desenvolvimento |
 
 ## Mapa do código

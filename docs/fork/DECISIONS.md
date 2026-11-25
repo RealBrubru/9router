@@ -44,7 +44,7 @@ Esta etapa trata do **Estimated Cost**. As novas estimativas aplicam as tarifas 
 - **Smart Router.** Ordenar recursos com prioridades configuráveis, incluindo expiração mais próxima. Verificar modelo, ferramentas e contexto. Aplicar elegibilidade por chave e aplicação em combos, retries e fallbacks. Exigir opção explícita para recursos pagos e adotar fallback conservador com dados ausentes ou defasados.
 - **Cost & Savings Dashboard.** Exibir consumo, franquias, créditos e custos com origem identificável. Explicitar a referência da economia e distinguir cobrança adicional, assinatura, custo teórico de API e faturamento confirmado.
 
-Investigar para a OpenAI API os endpoints `GET /v1/organization/usage/completions` e `GET /v1/organization/costs`, permissões administrativas, agregação por modelo, projeto, chave e `service_tier`, latência e granularidade. Confirmar os critérios oficiais de elegibilidade, grupos e renovação antes de aplicar uma margem inicial sugerida de **10%**, ajustável. Projetos externos podem consumir a franquia mesmo com margem. Para créditos financeiros, considerar saldo, expiração, defasagem e consumo externo. Para GitHub Copilot, verificar a cobertura do Quota Tracker frente ao ciclo e aos créditos vigentes. Para Codex, aplicar as permissões e janelas de cada conexão. Manter o mesmo desenho extensível a OpenRouter e outros provedores.
+Para a OpenAI API, o [experimento administrativo](RUNBOOK.md#experimento-com-a-openai-admin-usage-api) confirmou `incentivized-tier` e coleta com escopo Usage de leitura. Limites, agrupamentos de modelos e renovação devem ser configurados por organização. A margem inicial proposta de **10%**, ajustável, reduz o risco de cobrança mesmo com consumo externo, mas não garante custo zero. Para créditos financeiros, considerar saldo, expiração, defasagem e consumo externo. Para GitHub Copilot, verificar a cobertura do Quota Tracker frente ao ciclo e aos créditos vigentes. Para Codex, aplicar as permissões e janelas de cada conexão. Manter o desenho extensível a OpenRouter e outros provedores.
 
 ### Distribuição de orçamento por ciclo
 
@@ -68,3 +68,7 @@ Permitir políticas de uso restritas à franquia da assinatura, considerando jan
 | Timezone Support | Configurar o fuso de apresentação e aplicá-lo de forma consistente. Manter separado o fuso oficial de renovação de cada franquia. Investigar a aparente apresentação em UTC nos gráficos do Overview. |
 
 A descoberta atualiza o catálogo. O envio de dados exige autorização explícita para a conexão e a aplicação.
+
+### Verificação experimental de elegibilidade
+
+Em Dynamic Free Model Discovery, a proposta é descobrir o modelo, verificar sua elegibilidade documentada, executar um microteste de inferência expressamente autorizado e consultar o uso administrativo para verificar `incentivized-tier`. Registrar a evidência, a organização e a data. Exigir orçamento específico para experimentos potencialmente pagos e usar apenas conteúdo sintético. O resultado vale para aquele teste. Grupo de franquia e gratuidade futura exigem evidências próprias.
