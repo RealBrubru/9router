@@ -1,9 +1,10 @@
 import { getDashboardAuthSession } from "../auth/dashboardSession.js";
-import { getAdapter } from "../db/driver.js";
+import { getAdapter, getAdapterSync } from "../db/driver.js";
 import { createQuotaRepository } from "../db/repos/quotaRepo.js";
 import { quotaBucketWidth } from "./query.js";
 import { quotaDailyStart } from "./scheduler.js";
 import { quotaCollectorStartedAt, quotaSchedulerEnabled } from "./runtime.js";
+import { createQuotaReconciliationReadService } from "./reconciliationReadService.js";
 
 const NO_STORE = { "Cache-Control": "private, no-store" };
 const MAX_PAGE_ROWS = 100;
@@ -42,13 +43,16 @@ function integerParam(params, name, minimum, maximum, fallback) {
   return number;
 }
 
-function parsePagination(params, names) {
-  const allowed = new Set(["offset", "limit", ...names]);
+function assertParamNames(params, allowed) {
   const seen = new Set();
   for (const name of params.keys()) {
-    if (!allowed.has(name) || seen.has(name)) throw new TypeError("Invalid quota query parameters");
+    if (!allowed.includes(name) || seen.has(name)) throw new TypeError("Invalid quota query parameters");
     seen.add(name);
   }
+}
+
+function parsePagination(params, names) {
+  assertParamNames(params, ["offset", "limit", ...names]);
   return {
     offset: integerParam(params, "offset", 0, MAX_OFFSET, 0),
     limit: integerParam(params, "limit", 1, MAX_PAGE_ROWS, 50),
@@ -135,9 +139,64 @@ function costRows(buckets) {
   })));
 }
 
+function reconciliationParams(params, now) {
+  assertParamNames(params, ["resolution", "evaluatedAt", "knowledgeAt"]);
+  const resolution = params.get("resolution") ?? "1d";
+  const evaluatedAt = integerParam(params, "evaluatedAt", 0, now);
+  const knowledgeAt = integerParam(params, "knowledgeAt", 0, now);
+  if (!Object.hasOwn(MAX_WINDOW, resolution) || (knowledgeAt !== undefined &&
+      (evaluatedAt === undefined || evaluatedAt > knowledgeAt))) throw new TypeError("Invalid quota query parameters");
+  return { resolution, evaluatedAt, knowledgeAt };
+}
+
+const pickFields = (value, names) => Object.fromEntries(names.map(name => [name, value[name]]));
+const publicWindow = window => window && pickFields(window, ["start", "end"]);
+const publicEvaluation = evaluation => pickFields(evaluation, ["evaluatedAt", "knowledgeAt", "readAt"]);
+
+function publicReconciliation(view) {
+  const { result, provenance, evaluation, policyBasis, resolution } = view;
+  const { scope, window, quality, remote, indicative } = result;
+  const { organizationId, groupId, unit } = scope;
+  const { temporal, collection, completeness, local, external } = quality;
+  const { amount, excess, status: indicativeStatus, referenceWindow, assumptions, limitations, blockers } = indicative;
+  return {
+    status: "available",
+    scope: { organizationId, groupId, unit },
+    policyBasis,
+    resolution,
+    window: publicWindow(window),
+    evaluation: { ...publicEvaluation(evaluation), mode: result.evaluation.mode },
+    quality: {
+      temporal: { status: temporal.status, gaps: temporal.gaps.map(publicWindow), referenceGaps: temporal.referenceGaps.map(publicWindow) },
+      population: quality.population,
+      collection: pickFields(collection, ["status", "lastCollectedAt", "maxAgeMs"]),
+      completeness: { status: completeness.status, requiredThrough: completeness.requiredThrough, gaps: completeness.gaps.map(publicWindow) },
+      local: pickFields(local, ["status", "knownAt"]),
+      external: pickFields(external, ["status", "attribution", "reported", "reportedOriginUnknown"]),
+    },
+    remote: remote && pickFields(remote, [
+      "incentivized", "notIncentivized", "outsideGroup", "unclassifiedModel", "unclassifiedTier", "gateway", "external", "originUnknown",
+    ]),
+    local: {
+      totals: pickFields(provenance.local.totals, ["observed", "estimated", "unknownEvents"]),
+      limitations: provenance.local.reasons,
+      truncated: provenance.local.truncated,
+    },
+    observations: provenance.remote.buckets.map(({ status, observedWindow, collectedAt, dataAsOf, issue }) =>
+      ({ status, observedWindow: publicWindow(observedWindow), collectedAt, dataAsOf, ...(issue ? { issue } : {}) })),
+    remoteIssue: provenance.remote.issue,
+    indicative: {
+      amount, excess, status: indicativeStatus, referenceWindow: publicWindow(referenceWindow), assumptions, limitations,
+      blockers: [...new Set(blockers.map(blocker => blocker.code))].map(code => ({ code })),
+    },
+  };
+}
+
 export function createQuotaReadApi({
   resolveSession = getDashboardAuthSession,
   openRepository = async () => createQuotaRepository(await getAdapter()),
+  openReconciliationDb = getAdapterSync,
+  createReconciliationService = createQuotaReconciliationReadService,
   now = Date.now,
   schedulerEnabled = quotaSchedulerEnabled,
 } = {}) {
@@ -202,5 +261,42 @@ export function createQuotaReadApi({
       return response({ error: "Quota data unavailable" }, 503);
     }
   }
-  return { list, snapshots };
+
+  async function reconciliation(request, orgId, groupId) {
+    const principal = await authenticate(request);
+    if (!principal) return response({ error: "Unauthorized" }, 401);
+    const validId = id => typeof id === "string" && /^[A-Za-z0-9_-]{1,160}$/.test(id) && !/^sk-/i.test(id);
+    if (!validId(orgId) || !validId(groupId)) return response({ error: "Invalid quota query" }, 400);
+    let query;
+    try {
+      query = reconciliationParams(new URL(request.url).searchParams, now());
+    } catch {
+      return response({ error: "Invalid quota query" }, 400);
+    }
+    try {
+      // Opening a cold adapter can migrate the DB. Only use initialized storage.
+      const db = openReconciliationDb();
+      const repository = createQuotaRepository(db);
+      return (db.readTransaction ?? db.transaction).call(db, () => {
+        const org = repository.getOrganization(orgId);
+        if (!org || !canRead(principal, org)) return response({ error: "Organization not found" }, 404);
+        if (!org.config.groups.some(group => group.id === groupId)) return response({ error: "Group not found" }, 404);
+
+        const service = createReconciliationService(db, { now });
+        const view = service.read({ organizationId: orgId, groupId, ...query });
+        if (view.status === "available") return response(publicReconciliation(view));
+        if (view.reason === "historical_state_unavailable") {
+          return response({ status: "unavailable", reason: view.reason, evaluation: publicEvaluation(view.evaluation), result: null });
+        }
+        if (["unsupported_quota_scope", "unsupported_policy_precision"].includes(view.reason)) {
+          return response({ status: "unavailable", reason: view.reason, result: null }, 422);
+        }
+        return response({ error: "Quota data unavailable" }, 503);
+      });
+    } catch {
+      return response({ error: "Quota data unavailable" }, 503);
+    }
+  }
+
+  return { list, snapshots, reconciliation };
 }

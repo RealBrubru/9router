@@ -2,7 +2,7 @@
 
 A investigação **7.1.2a** confirmou que o histórico local registra consumo na finalização, sem identidade durável por tentativa. Os buckets administrativos têm identidade, escopo e revisão. O adaptador OpenAI atual deixa a marca de completude nula. A entrega **7.1.2b** calcula uma indicação a partir de dados normalizados e evidências fornecidas pelo chamador. [Histórico local](../../src/lib/db/repos/usageRepo.js#L249) · [Snapshots do Collector](../../src/lib/db/repos/quotaRepo.js#L268) · [Adaptador OpenAI](../../src/lib/quota/openai.js#L240)
 
-A função é pura. A etapa **7.1.2b+** prepara os dados e chama o motor por uma camada interna de leitura. A exposição por API, o registro de tentativas, a homologação da coleta em granularidade de minuto e o controle de envio têm etapas próprias. [Motor](../../src/lib/quota/reconciliation.js) · [Fixtures](../../tests/unit/quota-reconciliation.test.js) · [Roadmap](ROADMAP.md#incrementos-do-quota-manager)
+A função é pura. A etapa **7.1.2b+** adapta os dados locais. A **7.1.2b++** expõe a visão diagnóstica na API administrativa. O registro de tentativas, a homologação da coleta em granularidade de minuto e o controle de envio têm etapas próprias. [Motor](../../src/lib/quota/reconciliation.js) · [Fixtures](../../tests/unit/quota-reconciliation.test.js) · [Roadmap](ROADMAP.md#incrementos-do-quota-manager)
 
 ## Contrato de entrada
 
@@ -94,3 +94,22 @@ O histórico seleciona timestamps ISO UTC no intervalo semiaberto. Um vínculo v
 A referência administrativa de chave e projeto é apresentada como identificador opaco por organização. O resultado exclui credenciais, chaves de clientes, payloads e referências de secrets. A fonte atual também deixa a origem do tráfego desconhecida. Um ID sem vínculo local pode corresponder a uso externo, e o valor comprovadamente externo permanece nulo enquanto essa origem não for demonstrável.
 
 **Limite histórico.** As tabelas guardam o bucket materializado, a última coleta e a configuração atual. O histórico não registra quando cada linha ficou visível, nem versões da política ou estados anteriores da tentativa. O serviço usa o instante da leitura para `knownAt`. Um pedido com corte de conhecimento anterior à leitura, ou referente a outro dia UTC, retorna `historical_state_unavailable`. A reconstrução no mesmo dia com conhecimento atual usa somente os contadores que cabem no horizonte pedido e continua indeterminada em relação ao saldo.
+
+## API administrativa de conciliação
+
+`GET /api/quota/organizations/{orgId}/groups/{groupId}/reconciliation` exige uma sessão administrativa assinada em `auth_token` e usa a mesma autorização dos snapshots do Collector. A sessão local representa o operador. Uma sessão OIDC precisa de emissor e sujeito explicitamente autorizados para a organização. A validação se aplica mesmo com `requireLogin=false`. Chaves de inferência e tokens de CLI não concedem acesso. [Rota](../../src/app/api/quota/organizations/%5BorgId%5D/groups/%5BgroupId%5D/reconciliation/route.js) · [Testes](../../tests/unit/quota-reconciliation-api.test.js)
+
+| Parâmetro | Regra |
+| --- | --- |
+| `orgId` e `groupId` | De 1 a 160 caracteres ASCII alfanuméricos, com hífen ou sublinhado. |
+| `resolution` | `1d` por padrão ou `1m` para dados já coletados. |
+| `evaluatedAt` | Instante UTC em milissegundos desde a época Unix. O padrão é o instante da leitura. |
+| `knowledgeAt` | Corte explícito de conhecimento em milissegundos. Exige `evaluatedAt`. O padrão é o instante da leitura. |
+
+Parâmetros repetidos, desconhecidos, futuros ou com `evaluatedAt > knowledgeAt` retornam `400`. Omitir os dois cortes produz uma avaliação contemporânea. Um `evaluatedAt` anterior no mesmo dia com `knowledgeAt` omitido pede reconstrução com o conhecimento da leitura atual.
+
+Uma resposta `200` com `status: "available"` inclui o escopo e a janela, os horários da avaliação, `quality` com cobertura temporal e de população, atualidade, completude, cobertura local e incerteza externa, além de `remote`, `local.totals`, limitações locais, observações resumidas e `indicative`. A rota preserva os estados `current`, `historical` e `unknown` produzidos pelo motor. Com o histórico disponível hoje, a cobertura local deixa a indicação nula. Os subtotais medidos continuam acessíveis.
+
+Um corte que o banco não consegue reconstruir retorna `200` com `status: "unavailable"`, `reason: "historical_state_unavailable"`, os cortes de avaliação e `result: null`. Sessão ausente ou inválida retorna `401`. Uma organização inexistente ou sem acesso retorna o mesmo `404`. Um grupo inexistente em organização autorizada retorna `404`. Escopo válido fora do suporte desta etapa retorna `422`. Dados indisponíveis ou adaptador ainda não inicializado retornam `503` com mensagem genérica.
+
+Todas as respostas do handler usam `Cache-Control: private, no-store`. Os resumos de observação trazem horários, janela e qualidade. Linhas individuais, modelos, revisões internas e identificadores de projetos, chaves e conexões ficam fora da resposta. A rota consulta o SQLite já inicializado e usa transações de leitura, inclusive no fallback `sql.js`. O atendimento não dispara coleta, inicialização do banco nem autorização de inferência.

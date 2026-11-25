@@ -244,13 +244,15 @@ function readLocalHistory(db, policy, provider, evaluatedAt, readAt) {
 
 /** Internal read-only view. The caller owns access control before exposing it. */
 export function createQuotaReconciliationReadService(db, { now = Date.now } = {}) {
-  const repository = createQuotaRepository(db, { now });
+  // sql.js's usual transaction schedules a file export even for SELECTs.
+  const readDb = db.readTransaction ? { ...db, transaction: db.readTransaction } : db;
+  const repository = createQuotaRepository(readDb, { now });
 
   function read({ organizationId, groupId, resolution = "1d", evaluatedAt, knowledgeAt }) {
     if (!validId(organizationId) || !validId(groupId) || !["1d", "1m"].includes(resolution)) {
       throw new TypeError("Invalid reconciliation read scope");
     }
-    return db.transaction(() => {
+    return readDb.transaction(() => {
       // Establish the SQLite read snapshot before assigning a visibility time to its facts.
       const organization = repository.getOrganization(organizationId);
       const readAt = now();

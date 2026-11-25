@@ -9,19 +9,23 @@ import { getSettings } from "@/lib/localDb";
 const DEFAULT_PASSWORD = "123456";
 const SESSION_MAX_AGE_SEC = 24 * 60 * 60;
 
-function loadJwtSecret() {
-  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
-  const file = path.join(DATA_DIR, "jwt-secret");
-  try {
-    return fs.readFileSync(file, "utf8").trim();
-  } catch {}
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const generated = crypto.randomBytes(32).toString("hex");
-  fs.writeFileSync(file, generated, { mode: 0o600 });
-  return generated;
-}
+let secret;
 
-const SECRET = new TextEncoder().encode(loadJwtSecret());
+function sessionSecret(create = false) {
+  if (secret) return secret;
+  const file = path.join(DATA_DIR, "jwt-secret");
+  let value = process.env.JWT_SECRET;
+  try {
+    value ||= fs.readFileSync(file, "utf8").trim();
+  } catch {}
+  if (!value && create) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    value = crypto.randomBytes(32).toString("hex");
+    fs.writeFileSync(file, value, { mode: 0o600 });
+  }
+  if (value) secret = new TextEncoder().encode(value);
+  return secret;
+}
 
 export function shouldUseSecureCookie(request) {
   const forceSecureCookie = process.env.AUTH_COOKIE_SECURE === "true";
@@ -35,23 +39,19 @@ export async function createDashboardAuthToken(claims = {}) {
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime("24h")
-    .sign(SECRET);
+    .sign(sessionSecret(true));
 }
 
 export async function verifyDashboardAuthToken(token) {
-  if (!token) return false;
-  try {
-    await jwtVerify(token, SECRET);
-    return true;
-  } catch {
-    return false;
-  }
+  return (await getDashboardAuthSession(token)) !== null;
 }
 
 export async function getDashboardAuthSession(token) {
   if (!token) return null;
   try {
-    const { payload } = await jwtVerify(token, SECRET);
+    const key = sessionSecret();
+    if (!key) return null;
+    const { payload } = await jwtVerify(token, key);
     return payload;
   } catch {
     return null;

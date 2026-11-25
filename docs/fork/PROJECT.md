@@ -17,7 +17,7 @@ Os princípios preliminares são **Privacy by default**, **Cost awareness**, **S
 
 A direção de produto combina gateway e roteamento inteligente, políticas de acesso, quotas, orçamentos e FinOps, descoberta de modelos, tarifas, gratuidades e descontos, e observabilidade granular. Branding técnico, infraestrutura e distribuição próprias seguem no backlog estratégico. [Backlog estratégico](ROADMAP.md#backlog-estratégico-do-projeto-independente)
 
-O saldo indicativo de franquia informa o operador com a janela, as hipóteses e as lacunas que sustentam o cálculo. A autorização de consumo terá política própria, decisão por tentativa e reserva atômica. [Contrato de conciliação](QUOTA-RECONCILIATION.md)
+O saldo indicativo de franquia informa o operador com a janela, as hipóteses e as lacunas que sustentam o cálculo. A API administrativa disponibiliza a visão diagnóstica por organização e grupo. A autorização de consumo terá política própria, decisão por tentativa e reserva atômica. [Contrato da API de conciliação](QUOTA-RECONCILIATION.md#api-administrativa-de-conciliação)
 
 ## Como trabalhamos
 

@@ -1,4 +1,6 @@
+import { NextResponse } from "next/server";
 import { proxy as dashboardProxy, isAuthenticated } from "./dashboardGuard";
+import { verifyDashboardAuthToken } from "./lib/auth/dashboardSession.js";
 import {
   sessionFromRequest,
   isAccountProxyPath,
@@ -11,6 +13,14 @@ import {
 } from "./lib/mimoLoginSession";
 
 export default async function proxy(request) {
+  const { pathname } = request.nextUrl;
+  // Require the signed cookie without the settings lookup, which can initialize
+  // the database. The route additionally checks the principal and organization.
+  if (/^\/api\/quota\/organizations\/[^/]+\/groups\/[^/]+\/reconciliation\/?$/.test(pathname)) {
+    if (await verifyDashboardAuthToken(request.cookies.get("auth_token")?.value)) return NextResponse.next();
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: { "Cache-Control": "private, no-store" } });
+  }
+
   // Xiaomi account session-login proxy (src/lib/mimoLoginSession.js).
   // Session state (region + accumulated cookie jar) travels in the httpOnly
   // 9r_mimo_login cookie — route handlers and this proxy run in separate
@@ -21,7 +31,6 @@ export default async function proxy(request) {
   // forwarder. No URL-carried session — it would leak the jar via history/logs/Referer.
   const cookies = request.headers.get("cookie") || "";
   const hasSessionCookie = cookies.includes("9r_mimo_login=");
-  const { pathname } = request.nextUrl;
   if (hasSessionCookie && !(await isAuthenticated(request))) {
     // Forged or stale session cookie without dashboard auth — drop it early.
     const res = await dashboardProxy(request);
