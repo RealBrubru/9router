@@ -283,6 +283,7 @@ export function createQuotaRepository(db, { now = Date.now } = {}) {
           WHERE organizationId = ? AND source = ? AND scope = ? AND collectionId = ?
           ORDER BY bucketStart`, [...key, collectionId]);
         lastSuccess = {
+          collectionId,
           ...metadata,
           buckets: buckets.map(decodeBucket),
         };

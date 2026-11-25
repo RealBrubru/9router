@@ -2,7 +2,7 @@
 
 A investigação **7.1.2a** confirmou que o histórico local registra consumo na finalização, sem identidade durável por tentativa. Os buckets administrativos têm identidade, escopo e revisão. O adaptador OpenAI atual deixa a marca de completude nula. A entrega **7.1.2b** calcula uma indicação a partir de dados normalizados e evidências fornecidas pelo chamador. [Histórico local](../../src/lib/db/repos/usageRepo.js#L249) · [Snapshots do Collector](../../src/lib/db/repos/quotaRepo.js#L268) · [Adaptador OpenAI](../../src/lib/quota/openai.js#L240)
 
-A função é pura e só é chamada pelos testes nesta entrega. A integração de leitura, o registro de tentativas, a observação em granularidade de minuto e o controle de envio têm etapas próprias. [Motor](../../src/lib/quota/reconciliation.js) · [Fixtures](../../tests/unit/quota-reconciliation.test.js) · [Roadmap](ROADMAP.md#incrementos-do-quota-manager)
+A função é pura. A etapa **7.1.2b+** prepara os dados e chama o motor por uma camada interna de leitura. A exposição por API, o registro de tentativas, a homologação da coleta em granularidade de minuto e o controle de envio têm etapas próprias. [Motor](../../src/lib/quota/reconciliation.js) · [Fixtures](../../tests/unit/quota-reconciliation.test.js) · [Roadmap](ROADMAP.md#incrementos-do-quota-manager)
 
 ## Contrato de entrada
 
@@ -74,3 +74,23 @@ Com franquia de 1.000 tokens, margem de 100 e nenhuma sobreposição demonstrada
 | Mesmos números, coleta defasada | Subtotal 850, indicação histórica de 50, com janela de referência e completude ainda desconhecida. |
 | Nova janela sem observação válida | Consumo remoto desconhecido e indicação nula. |
 | Remoto 600, local medido 250 e tentativa pendente com reserva de 40 sem limite superior | Subtotal conhecido de 890 e indicação nula, com a razão `local_without_upper_bound`. |
+
+## Serviço interno de leitura
+
+`createQuotaReconciliationReadService(db, { now? }).read({ organizationId, groupId, resolution?, evaluatedAt?, knowledgeAt? })` recebe um adaptador SQLite já aberto e faz uma leitura transacional. O chamador será responsável pela autorização por organização antes de qualquer exposição. O serviço usa o dia da organização em **UTC às 00:00**, para grupos OpenAI em tokens. `resolution` usa `1d` por padrão ou `1m` para leitura de dados já armazenados. A avaliação e o conhecimento usam o instante da leitura se omitidos. [Serviço](../../src/lib/quota/reconciliationReadService.js) · [Fixtures SQLite](../../tests/unit/quota-reconciliation-read-service.test.js)
+
+| Saída | Semântica |
+| --- | --- |
+| `status: "available"` | Visão diagnóstica obtida. `policyBasis: "current_config_only"` identifica a configuração atual usada para classificar dados. O fingerprint identifica essa configuração sem afirmar sua vigência passada. |
+| `result` | Escopo, janela, avaliação, sinais de qualidade, subtotal oficial remoto e indicação produzida pelo motor. Nesta etapa, a indicação permanece nula pela cobertura local incompleta ou desconhecida. Os valores remotos e locais conhecidos aparecem separadamente, sem subtotal conciliado. |
+| `provenance.remote` | Buckets do escopo **Usage sem filtros**, agrupado por modelo, tier, projeto e chave administrativa. Cada bucket preserva intervalo nominal, intervalo devolvido pelo provedor, janela da consulta, janela efetivamente observada, horário de coleta, estado, marca de completude e `revisionRef` da coleção materializada. O ordinal `revision: 0` serve à chamada do motor e o `revisionRef` identifica a revisão persistida. |
+| `provenance.local` | Linhas identificáveis de `usageHistory`, classificadas como uso medido, estimado ou desconhecido. A identidade é da linha SQLite. A cobertura é parcial quando há linhas atribuíveis e desconhecida quando elas faltam. Subtotais sem valores medidos ou estimados ficam nulos. Uma medição zero explícita é preservada. O retorno sinaliza truncamento quando a seleção ultrapassa 10.000 linhas candidatas. |
+| `status: "unavailable"` | Motivo explícito e `result: null` para escopo inexistente, escopo não suportado, precisão de política não suportada ou estado histórico indisponível. |
+
+O repositório fornece linhas anteriores ao rollup da API administrativa. O serviço escolhe um escopo e uma resolução por leitura. A revisão atual substitui a anterior. Uma omissão preserva a identidade da coleção que a registrou, com lista de contadores vazia. Dimensões duplicadas deixam o bucket inutilizável. Contadores de um bucket que se estende além do horizonte solicitado ficam disponíveis como proveniência da observação original e são rejeitados pelo motor para aquele cálculo. A marca `dataAsOf: null` é preservada.
+
+O histórico seleciona timestamps ISO UTC no intervalo semiaberto. Um vínculo vigente naquele timestamp é contexto da linha, e o vínculo efetivo no despacho permanece desconhecido. Linhas sem vínculo demonstrável e conexões com vínculos em mais de uma organização ficam fora da atribuição. O serviço fornece diagnósticos locais ao lado do resultado e passa apenas a cobertura ao motor, pois uma linha de histórico não identifica uma tentativa. A igualdade de dimensões ou contadores não produz prova de sobreposição.
+
+A referência administrativa de chave e projeto é apresentada como identificador opaco por organização. O resultado exclui credenciais, chaves de clientes, payloads e referências de secrets. A fonte atual também deixa a origem do tráfego desconhecida. Um ID sem vínculo local pode corresponder a uso externo, e o valor comprovadamente externo permanece nulo enquanto essa origem não for demonstrável.
+
+**Limite histórico.** As tabelas guardam o bucket materializado, a última coleta e a configuração atual. O histórico não registra quando cada linha ficou visível, nem versões da política ou estados anteriores da tentativa. O serviço usa o instante da leitura para `knownAt`. Um pedido com corte de conhecimento anterior à leitura, ou referente a outro dia UTC, retorna `historical_state_unavailable`. A reconstrução no mesmo dia com conhecimento atual usa somente os contadores que cabem no horizonte pedido e continua indeterminada em relação ao saldo.
