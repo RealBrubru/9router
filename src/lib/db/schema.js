@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -155,6 +155,53 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_model ON requestDetails(model)",
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
     ],
+  },
+  quotaOrganizations: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      provider: "TEXT NOT NULL",
+      externalId: "TEXT NOT NULL",
+      credentialRef: "TEXT NOT NULL",
+      enabled: "INTEGER NOT NULL",
+      config: "TEXT NOT NULL",
+    },
+    indexes: ["CREATE UNIQUE INDEX IF NOT EXISTS idx_quota_org_external ON quotaOrganizations(provider, externalId)"],
+  },
+  quotaConnectionBindings: {
+    columns: {
+      organizationId: "TEXT NOT NULL REFERENCES quotaOrganizations(id)",
+      connectionId: "TEXT NOT NULL",
+      apiKeyId: "TEXT NOT NULL",
+      projectId: "TEXT",
+      validFrom: "INTEGER NOT NULL",
+      validTo: "INTEGER",
+    },
+    primaryKey: "PRIMARY KEY (connectionId, validFrom)",
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_quota_binding_org ON quotaConnectionBindings(organizationId, connectionId)"],
+  },
+  quotaBuckets: {
+    columns: {
+      organizationId: "TEXT NOT NULL REFERENCES quotaOrganizations(id)",
+      source: "TEXT NOT NULL",
+      scope: "TEXT NOT NULL",
+      bucketStart: "INTEGER NOT NULL",
+      bucketEnd: "INTEGER NOT NULL",
+      collectionId: "TEXT NOT NULL",
+      collectedAt: "INTEGER NOT NULL",
+      data: "TEXT NOT NULL",
+    },
+    primaryKey: "PRIMARY KEY (organizationId, source, scope, bucketStart)",
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_quota_bucket_collection ON quotaBuckets(organizationId, source, scope, collectionId)"],
+  },
+  quotaCollectionState: {
+    columns: {
+      organizationId: "TEXT NOT NULL REFERENCES quotaOrganizations(id)",
+      source: "TEXT NOT NULL",
+      scope: "TEXT NOT NULL",
+      lastAttempt: "TEXT NOT NULL",
+      lastSuccess: "TEXT",
+    },
+    primaryKey: "PRIMARY KEY (organizationId, source, scope)",
   },
 };
 
