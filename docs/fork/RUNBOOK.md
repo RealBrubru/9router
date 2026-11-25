@@ -63,6 +63,12 @@ Na consulta de sete dias de Costs agrupada por `line_item`, observaram-se lança
 
 O Dashboard oficial mostrou 1 milhão e 10 milhões de tokens diários para os dois grupos e compartilhamento de inputs e outputs em todos os projetos da organização experimental. Esses valores são específicos daquele escopo. A lista de modelos do tooltip estava desatualizada em relação à documentação oficial. Confirme a configuração por organização e registre a fonte da lista de modelos. [Regras oficiais do programa](https://help.openai.com/en/articles/10306912-sharing-feedback-evaluation-and-fine-tuning-data-and-api-inputs-and-outputs-with-openai)
 
+### Operação da homologação do Quota Collector
+
+Provisione a organização localmente com `putOrganization` enquanto o coletor global estiver desativado. Registre os limites e os modelos conforme a organização, com a janela de renovação e a margem acordadas. Guarde a Admin Key de leitura fora do checkout e do SQLite e monte seu diretório em modo somente leitura. Ao ativar o coletor na instância isolada, aguarde o primeiro ciclo com o Dashboard fechado. Compare Usage e Costs com consultas administrativas independentes para o mesmo escopo e janela, usando o tráfego já existente. Após o reinício, confira `lastSuccess.collectedAt` e `schedule.nextAt`. [Resultado da homologação ARM64](QUOTA-COLLECTOR.md#homologação-real-na-imagem-arm64)
+
+Na homologação, `read-quota.py usage` retornou HTTP `404` porque o ID local padrão do auxiliar era diferente do ID provisionado. Liste as organizações acessíveis com `read-quota.py list` e informe o ID local com `read-quota.py usage --org <id-local>` ou `read-quota.py costs --org <id-local>`. Esse ajuste resolveu a consulta. O endpoint de snapshots espera o ID local retornado pela listagem. Se o `404` persistir, confira a autorização da sessão para a organização.
+
 ### Observability e aba Details
 
 Quando `ENABLE_REQUEST_LOGS` está definida, somente o valor `true`, sem distinção de maiúsculas, habilita Details. Isso tem precedência sobre `enableObservability` no Dashboard. Sem a variável, o valor booleano do Dashboard prevalece. `OBSERVABILITY_ENABLED` é o fallback quando a configuração da interface não fornece um booleano. Para devolver o controle ao Dashboard, remova `ENABLE_REQUEST_LOGS` do ambiente do container e recrie somente a instância autorizada. [Precedência no repositório de detalhes](../../src/lib/db/repos/requestDetailsRepo.js#L13)

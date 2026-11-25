@@ -21,12 +21,12 @@ O detalhamento da homologação está no [runbook](RUNBOOK.md#homologação-inic
 
 | Etapa | Entrega | Situação |
 | --- | --- | --- |
-| 7.1.1 — Quota Collector | Coleta passiva por organização, com SQLite e API interna de leitura | Adaptador e persistência consolidados na branch de desenvolvimento. Agendador e API interna em revisão. |
-| 7.1.2 — Quota Reconciliation | Conciliar uso oficial, local, externo e requisições em andamento por janela e escopo | Planejada. Depende do coletor e de fixtures de sobreposição e defasagem. |
+| 7.1.1 — Quota Collector | Coleta passiva por organização, com SQLite e API interna de leitura | Homologação real (7.1.1e) concluída em ARM64 com OpenAI Usage e Costs. Retomada do agendamento confirmada após reinício. |
+| 7.1.2 — Quota Reconciliation | Conciliar uso oficial, local, externo e requisições em andamento por janela e escopo | Planejada, aguardando autorização. Preparar fixtures de sobreposição, defasagem e virada UTC. |
 | 7.1.3 — Quota Dashboard | Acompanhar franquias, configurar grupos e mostrar origem, cobertura e atualidade | Planejada. A configuração e a visualização dos snapshots podem começar após a coleta. Exibir saldo quando a conciliação o sustentar. |
 | 7.1.4 — Quota Enforcement | Aplicar franquias na elegibilidade por conexão e no Smart Router | Planejada. Depende de conciliação, reservas e elegibilidade em retries, combos e fallbacks. |
 
-Os três primeiros incrementos preservam o roteamento atual. [Resultados do experimento](RUNBOOK.md#experimento-com-a-openai-admin-usage-api) · [Proposta do coletor](QUOTA-COLLECTOR.md)
+Os três primeiros incrementos preservam o roteamento atual. A etapa 7.1.1 encerra o aceite da coleta passiva. Defasagem, classificação incompleta de modelos e renovação UTC em tempo real seguem registradas para as etapas seguintes. [Homologação real e limitações](QUOTA-COLLECTOR.md#homologação-real-na-imagem-arm64) · [Experimento administrativo anterior](RUNBOOK.md#experimento-com-a-openai-admin-usage-api)
 
 ## Backlog sem ordem rígida de implementação
 
@@ -36,3 +36,12 @@ Os três primeiros incrementos preservam o roteamento atual. [Resultados do expe
 - **Diagnóstico e apresentação.** Granular Observability e Timezone Support.
 
 Os escopos estão nas [propostas de descoberta e interface](DECISIONS.md#propostas-de-descoberta-e-interface).
+
+## Backlog estratégico do projeto independente
+
+Propostas futuras para a [direção BHRoute](PROJECT.md#direção-para-um-projeto-independente), sem ordem rígida de implementação.
+
+- **Licenças e distribuição.** Auditar licenças, dependências e assets. Inventariar os componentes efetivamente distribuídos e incluir os avisos e licenças correspondentes nas imagens e nos pacotes.
+- **Privacidade e comunicação externa.** Remover o Google Analytics vinculado ao upstream, revisar a telemetria e a comunicação com serviços externos e adotar telemetria desativada por padrão.
+- **Builds e publicação.** Versionar o lockfile, buscar builds reproduzíveis, preparar infraestrutura própria de CI/CD e desenvolver mecanismos próprios de publicação e atualização.
+- **Evolução técnica.** Modularizar a arquitetura incrementalmente, migrar gradualmente para TypeScript, redesenhar a interface e avaliar a arquitetura de persistência em etapa própria.

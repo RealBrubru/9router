@@ -1,6 +1,6 @@
 # Proposta técnica do Quota Collector
 
-Escopo da etapa **7.1.1**. O adaptador e a persistência foram consolidados na branch de desenvolvimento. O agendador e a API interna de leitura estão em revisão. O coletor é passivo. Consulte o [experimento](RUNBOOK.md#experimento-com-a-openai-admin-usage-api) e os [incrementos seguintes](ROADMAP.md#incrementos-do-quota-manager).
+Escopo da etapa **7.1.1**. Adaptador, persistência, agendador e API interna de leitura foram consolidados na branch de desenvolvimento. A imagem ARM64 passou na homologação inicial e na homologação real **7.1.1e** com OpenAI Usage e Costs. Consulte o [experimento anterior](RUNBOOK.md#experimento-com-a-openai-admin-usage-api) e os [incrementos seguintes](ROADMAP.md#incrementos-do-quota-manager).
 
 ## Composição e reaproveitamento
 
@@ -84,6 +84,21 @@ As rotas exigem o cookie de sessão assinado, mesmo com `requireLogin=false`. O 
 
 As rotas fazem leitura local e enviam `Cache-Control: private, no-store`. Cada página de organizações ou registros tem até 100 entradas. A resposta de snapshots exibe até 50 grupos e 100 modelos por grupo, com os respectivos totais para indicar truncamento. Buckets que estavam no histórico e foram omitidos pela última resposta sobreposta continuam visíveis com `omitted: true`. Eles ficam fora dos totais retornados. Um snapshot válido representa uma observação recebida dentro da janela. A fonte pode ainda estar processando eventos recentes.
 
-### Homologação proposta
+### Homologação inicial
 
-Após revisão e autorização, construir a imagem ARM64 a partir do commit aprovado. Usar outra instância em loopback, com volume e segredos próprios. Começar com o coletor desativado e verificar o bootstrap da imagem. Em seguida, testar com fixtures a montagem somente leitura, a inicialização sem abrir o Dashboard, reinício, rotação e virada UTC. Em rodada real autorizada, habilitar uma organização com Admin Key restrita, comparar snapshots com o Dashboard oficial e medir a publicação de Usage e Costs separadamente. Usar tráfego já existente para essa comparação. Conferir a negação de acessos sem sessão e entre organizações delegadas, e manter as duas instalações existentes fora do teste.
+A imagem ARM64 `dev-b6e3083e`, construída a partir de `b6e3083e`, passou em instância exclusiva de loopback. Com o coletor e a Observability desativados, foram confirmados health check, migrations do SQLite, montagem somente leitura, login, API administrativa vazia, rejeição de acesso anônimo ou por chave de inferência e persistência após reinício. O gateway respondeu à listagem de modelos e rejeitou requisições inválidas em JSON. O procedimento de cadastro da organização foi validado em SQLite temporário com configuração sintética.
+
+### Homologação real na imagem ARM64
+
+Na etapa **7.1.1e**, o proprietário homologou manualmente a imagem ARM64 `realbrubru/9router:dev-b6e3083e`, construída do commit `b6e3083e894207bf7162e9e92a6c72b95e1bbfac`. Uma organização foi provisionada no SQLite. A Admin Key **Restricted**, limitada a **Usage API Scope: Read**, foi instalada no diretório privado montado somente para leitura. A coleta começou com o Dashboard fechado.
+
+| Cenário | Evidência registrada |
+| --- | --- |
+| Usage | Totais de tokens e requisições conferiram com as consultas administrativas independentes, incluindo o último microteste. Todos os registros observados vieram como `incentivized-tier`. As rodadas periódicas não apresentaram duplicação observada. |
+| Costs no dia UTC anterior | Os lançamentos consultados registraram quantidades positivas de tokens com custo explicitamente igual a zero. |
+| Costs no dia UTC corrente | A tentativa de coleta foi bem-sucedida. A janela corrente retornou `status: unknown`, `coverage: missing` e ausência de registros. A ausência de um lançamento não confirma custo zero. |
+| Reinício | Organização, configuração, snapshots e agendamento persistiram. O último sucesso de Usage observado ocorreu cerca de 36 segundos após o início do container. A próxima coleta estava prevista cerca de 60 segundos depois. Os snapshots observados tinham zero falhas consecutivas. |
+
+Os totais da organização, o conteúdo dos snapshots e os horários absolutos da instância ficam no registro privado de homologação. O procedimento reutilizável e o diagnóstico do HTTP 404 do auxiliar estão no [runbook](RUNBOOK.md#operação-da-homologação-do-quota-collector).
+
+**Limitações.** A defasagem efetiva do provedor continua desconhecida e `dataAsOf` permanece nulo. `collectedAt` indica quando o coletor observou os dados, e a cobertura do dia corrente pode ser parcial. A classificação de modelos nos grupos de franquia está incompleta. A virada às 00:00 UTC foi exercitada com relógio simulado e segue pendente em tempo real. O Collector é passivo. Quota Reconciliation, saldo operacional e Enforcement permanecem como etapas futuras.
