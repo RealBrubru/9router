@@ -42,6 +42,29 @@ Esta etapa trata do **Estimated Cost**. As novas estimativas aplicam as tarifas 
 - **Quota Manager.** Controlar tokens, créditos, requisições e outras unidades por conta ou conexão, com janelas diárias, mensais ou específicas do provedor. Registrar origem, atualidade e estado do uso.
 - **Budget Manager.** Controlar orçamento, saldo promocional, validade e renovação. Reservar saldo atomicamente para requisições em andamento, liquidar de forma idempotente e conciliar uso externo sem duplicação.
 - **Smart Router.** Ordenar recursos com prioridades configuráveis, incluindo expiração mais próxima. Verificar modelo, ferramentas e contexto. Aplicar elegibilidade por chave e aplicação em combos, retries e fallbacks. Exigir opção explícita para recursos pagos e adotar fallback conservador com dados ausentes ou defasados.
-- **Cost & Savings.** Exibir consumo, franquias, créditos e custos com origem identificável. Explicitar a referência da economia e distinguir cobrança adicional, assinatura, custo teórico de API e faturamento confirmado.
+- **Cost & Savings Dashboard.** Exibir consumo, franquias, créditos e custos com origem identificável. Explicitar a referência da economia e distinguir cobrança adicional, assinatura, custo teórico de API e faturamento confirmado.
 
 Investigar para a OpenAI API os endpoints `GET /v1/organization/usage/completions` e `GET /v1/organization/costs`, permissões administrativas, agregação por modelo, projeto, chave e `service_tier`, latência e granularidade. Confirmar os critérios oficiais de elegibilidade, grupos e renovação antes de aplicar uma margem inicial sugerida de **10%**, ajustável. Projetos externos podem consumir a franquia mesmo com margem. Para créditos financeiros, considerar saldo, expiração, defasagem e consumo externo. Para GitHub Copilot, verificar a cobertura do Quota Tracker frente ao ciclo e aos créditos vigentes. Para Codex, aplicar as permissões e janelas de cada conexão. Manter o mesmo desenho extensível a OpenRouter e outros provedores.
+
+### Distribuição de orçamento por ciclo
+
+Para recursos mensais, o **orçamento diário adaptativo** é a política inicial preferida, aprovada para implementação futura. Divide o saldo operacional pelos dias elegíveis restantes e redistribui o saldo não utilizado ao longo do ciclo. Por exemplo, US$ 100 em 22 dias úteis dão uma cota inicial aproximada de US$ 4,55. As opções configuráveis incluem o modo **fixo**, com uma cota diária definida, e o modo **livre**, com uso a qualquer momento dentro do limite do ciclo.
+
+O calendário poderá usar dias úteis ou corridos, com margem de segurança configurável. Ao atingir a cota operacional diária, o roteador poderá fazer fallback para um recurso elegível. Uma opção explícita poderá permitir ultrapassar a cota diária dentro do limite mensal, respeitando a margem. A política vale para tokens, créditos e valores financeiros.
+
+### Elegibilidade e proteção de créditos adicionais
+
+Permitir políticas de uso restritas à franquia da assinatura, considerando janelas simultâneas, como cinco horas e uma semana. A proteção de créditos adicionais pagos depende de dados atualizados e do que o provedor permite consultar ou controlar. Se o gateway não puder distinguir a franquia de uma cobrança adicional com segurança suficiente, a política restritiva deve impedir a seleção daquela conexão e buscar fallback elegível.
+
+## Propostas de descoberta e interface
+
+| Tema | Escopo |
+| --- | --- |
+| Dynamic Model Discovery | Consultar catálogos nos provedores manualmente e em intervalos configuráveis. Identificar modelos novos ou descontinuados e capacidades disponíveis, preservando modelos personalizados. |
+| Dynamic Pricing Discovery | Investigar fontes oficiais e o Model Cost Map do LiteLLM. Reutilizar a API e a página de preços para atualização automática e edição manual. Registrar fonte, vigência, atualidade e preços genéricos ou desconhecidos. Preservar custos históricos e adaptar a precisão monetária da interface. |
+| Dynamic Free Model Discovery | Identificar ofertas gratuitas e seus provedores, limites, restrições, disponibilidade e desempenho. Distinguir gratuidade pública de franquias da conta. |
+| Dynamic Discount Discovery | Detectar preços promocionais, condições, vigência, alterações e encerramentos. Expor os dados ao Smart Router. |
+| Granular Observability | Configurar níveis, metadados e conteúdo separadamente, por aplicação ou API key. Definir retenção e proteção de dados sensíveis, diagnosticar decisões de roteamento e exibir a configuração efetiva. Avisar ou desabilitar controles sobrescritos pelo ambiente. |
+| Timezone Support | Configurar o fuso de apresentação e aplicá-lo de forma consistente. Manter separado o fuso oficial de renovação de cada franquia. Investigar a aparente apresentação em UTC nos gráficos do Overview. |
+
+A descoberta atualiza o catálogo. O envio de dados exige autorização explícita para a conexão e a aplicação.

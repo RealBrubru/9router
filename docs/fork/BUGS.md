@@ -1,6 +1,6 @@
 # Problemas conhecidos
 
-**Escopo das evidências.** As observações na instalação experimental foram relatadas pelo proprietário. O diagnóstico rastreou o código no commit `5ae63d22`. As reproduções sintéticas executaram trechos do checkout em memória, com entradas e dependências simuladas. A imagem em execução, seu digest e as linhas do SQLite ativo ainda precisam de verificação autorizada. Os testes permanentes entram nas branches de correção.
+**Escopo das evidências.** As observações iniciais na instalação experimental foram relatadas pelo proprietário. O diagnóstico rastreou o código no commit `5ae63d22`, e as reproduções sintéticas usaram dependências simuladas. A rodada manual posterior com OpenAI API ocorreu na imagem de homologação e está descrita no [runbook](RUNBOOK.md#homologação-inicial-com-openai-api).
 
 ## Bug 1 — JSON inválido com `stream: false`
 
@@ -8,7 +8,7 @@
 
 **Evidência no código.** O [registro da OpenAI](../../open-sse/providers/registry/openai.js#L26) força o sinal interno de streaming. O [core](../../open-sse/handlers/chatCore.js#L145) ignora a preferência JSON nesse caso. O [executor](../../open-sse/executors/default.js#L287) usa o sinal no cabeçalho, enquanto [o envio](../../open-sse/executors/base.js#L143) serializa o corpo que conserva `stream: false`. Ao receber JSON, [a conversão forçada](../../open-sse/handlers/chatCore/sseToJsonHandler.js#L189) devolve `null`, e o [despacho](../../open-sse/handlers/chatCore.js#L526) cai no [handler SSE](../../open-sse/handlers/chatCore/streamingHandler.js#L67).
 
-**Reprodução sintética.** O transformador em passagem direta repassou um JSON de teste e anexou `data: [DONE]` após a chave final. O [flush](../../open-sse/utils/stream.js#L482) explica o sufixo. Essa reprodução isolou o transformador. A correção foi verificada pela rota de chat com upstream simulado. A rodada final aprovou 120 testes em 11 arquivos, incluindo 14 novos cenários de regressão. A imagem Docker em uso ainda aguarda validação.
+**Reprodução e validação.** O transformador em passagem direta repassou um JSON de teste e anexou `data: [DONE]` após a chave final. O [flush](../../open-sse/utils/stream.js#L482) explica o sufixo. A correção passou em 120 testes em 11 arquivos, incluindo 14 novos cenários. A imagem ARM64 passou com upstream simulado e, na rodada manual com `gpt-6-luna`, entregou JSON válido com `stream: false` e SSE com `stream: true`.
 
 **Aceite.** Para `stream: false`, obter um único objeto JSON com `application/json` e sem delimitadores SSE, com ou sem `Accept`. Se o upstream enviar SSE, agregá-lo no formato pedido pelo cliente. Preservar SSE para `stream: true` e o transporte de provedores que dependem dele.
 
@@ -33,7 +33,7 @@
 
 **Histórico da margem.** O commit `7881db81`, de 3 de fevereiro de 2026, introduziu `addBufferToUsage` e a margem de 2.000 tokens nos formatos OpenAI e Claude para evitar erros de contexto em CLIs. O histórico local deixa em aberto qual cliente motivou a mudança e por que esse valor foi escolhido. Homologar com clientes CLI representativos e observar a compactação de contexto.
 
-**Resultado após a correção.** A amostra entrega um evento final com `19/144/163` e grava uma única linha com esses valores, incluindo detalhes de cache e raciocínio. O agregado diário registra a mesma entrada e saída. Estimativas ficam marcadas no JSON já armazenado no SQLite. Um evento terminal com zero explícito e um JSON com zero explícito são contabilizados. Encerramentos sem consumo conhecido seguem a política de finalização. A homologação real continua pendente.
+**Resultado após a correção.** A reprodução entrega um evento final com `19/144/163` e grava uma única linha com esses valores, incluindo detalhes de cache e raciocínio. O agregado diário registra a mesma entrada e saída. Estimativas ficam marcadas no JSON do SQLite. Um evento terminal com zero explícito e um JSON com zero explícito são contabilizados. Encerramentos sem consumo conhecido seguem a política de finalização. A rodada com `gpt-6-luna` confirmou o uso real em SSE com e sem `include_usage`, incluindo raciocínio no SQLite, sem margem artificial ou estimativa prematura nos cenários testados.
 
 **Custo estimado.** A fórmula anterior somava o custo de toda a saída e mais uma parcela de raciocínio. Os 128 tokens de raciocínio já compõem os 144 de saída na amostra OpenAI. A [correção implementada](../../open-sse/providers/pricing.js#L481) reparte a saída entre raciocínio e demais tokens. Registros e agregados previamente gravados mantêm seus valores históricos. Detalhamentos negativos ou incompatíveis com os totais deixam o custo indisponível. A validação usou tarifas sintéticas e conferiu o histórico e os agregados em SQLite temporário.
 
@@ -41,7 +41,7 @@
 
 ## Bug 3 — Falso negativo do botão Test
 
-**Resolvido no teste com upstream simulado.** O Dashboard mostrou `Provider returned no completion choices for this model` em testes de modelos OpenAI. Chamadas diretas geraram resposta. O JSON inválido do Bug 1 é uma causa reproduzida para a mensagem. Após a correção do Bug 1, o probe passou pela rota de chat com upstream simulado sem mudanças no próprio probe. A instalação Docker ainda aguarda validação.
+**Validado com upstream simulado e OpenAI API.** O Dashboard mostrou `Provider returned no completion choices for this model` em testes de modelos OpenAI. Chamadas diretas geraram resposta. O JSON inválido do Bug 1 é uma causa reproduzida para a mensagem. Após a correção, o probe passou pela rota de chat com upstream simulado sem mudanças próprias. O botão Test também passou com `gpt-6-luna` na imagem ARM64.
 
 **Reprodução sintética.** [pingModelByKind](../../src/app/api/models/test/ping.js#L194) mostrou exatamente essa mensagem com o JSON sintético seguido de `[DONE]`. Com o mesmo JSON limpo, retornou `ok: true`. A exceção de parse é ignorada, então HTTP 200 com corpo malformado cai na mesma mensagem que JSON com `choices` vazio.
 
