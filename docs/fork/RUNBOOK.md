@@ -163,6 +163,14 @@ Execute novas chamadas somente após autorização explícita.
    curl -fsS -b "$cookiejar" "$scope/groups/$group/reconciliation"
    ```
 
+### Homologação do Quota Dashboard v1
+
+O Dashboard da revisão `435589b7` foi homologado em ARM64. O mesmo esquema SQLite passou na verificação de compatibilidade entre as imagens anterior e candidata com dados sintéticos. Na troca autorizada, o backup do volume parado e o banco ativo passaram em `integrity_check` e `foreign_key_check`, com esquema `003` e conteúdo idêntico nas tabelas verificadas. O container anterior ficou parado como checkpoint de rollback e a instância manteve a configuração, o armazenamento e o relay.
+
+O aceite visual com dados reais já coletados confirmou a correspondência entre o Dashboard e as fontes administrativas e locais, inclusive no modo escuro. A tela preservou a separação entre franquia configurada, consumo local e consumo remoto sem classificação. A cobertura local seguiu parcial e a disponibilidade permaneceu indeterminada. O navegador validou a atualização manual. As rotas administrativas foram testadas com sessão e com acesso anônimo negado. A homologação do Dashboard usou os dados existentes, sem novas inferências.
+
+Na conferência passiva de 26/11/2026 UTC, Usage já havia concluído uma coleta agendada após a troca. Costs mantinha o sucesso anterior, zero falhas consecutivas e a próxima coleta agendada. Até a conferência, ainda não havia uma nova coleta bem-sucedida de Costs após a troca. A janela exibida seguia sem lançamentos administrativos reportados. [Contrato da tela](QUOTA-RECONCILIATION.md#quota-dashboard-v1)
+
 ### Observability e aba Details
 
 Quando `ENABLE_REQUEST_LOGS` está definida, somente o valor `true`, sem distinção de maiúsculas, habilita Details. Isso tem precedência sobre `enableObservability` no Dashboard. Sem a variável, o valor booleano do Dashboard prevalece. `OBSERVABILITY_ENABLED` é o fallback quando a configuração da interface não fornece um booleano. Para devolver o controle ao Dashboard, remova `ENABLE_REQUEST_LOGS` do ambiente do container e recrie somente a instância autorizada. [Precedência no repositório de detalhes](../../src/lib/db/repos/requestDetailsRepo.js#L13)
