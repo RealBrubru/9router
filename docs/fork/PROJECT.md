@@ -11,7 +11,7 @@ O fork parte do 9Router para centralizar acesso a LLMs por aplicações e agente
 
 ## Direção para um projeto independente
 
-**PipoRouter** é o nome definitivo escolhido para o futuro projeto independente. O posicionamento é **Open Source AI Infrastructure** e o slogan é **“Your AI. Your resources. Your rules.”**. O desenvolvimento continua no fork atual do 9Router. A transição futura preservará o histórico Git, a atribuição ao 9Router e um remote para incorporar correções relevantes do upstream. O trabalho parte da base atual e avança por refatorações incrementais. [Escopo homologado](QUOTA-COLLECTOR.md#homologação-real-na-imagem-arm64)
+**PipoRouter** é o nome definitivo escolhido para o projeto independente aprovado para a próxima etapa. O posicionamento é **Open Source AI Infrastructure** e o slogan é **“Your AI. Your resources. Your rules.”**. O destino planejado é `RealBrubru/piporouter`, com preservação do fork `RealBrubru/9router`. Após a homologação e publicação do Quota Dashboard, a transição de identidade terá etapa própria. Ela preservará integralmente o histórico Git, os autores, as licenças e as atribuições, com possibilidade de incorporar seletivamente melhorias do upstream original. O trabalho parte da base atual e avança por refatorações incrementais. [Marco de transição](ROADMAP.md#transição-para-o-piporouter)
 
 Os princípios preliminares são **Privacy by default**, **Cost awareness**, **Security first**, **User control**, **Provider agnostic**, **Open source**, **Self-hosted first** e **Test-driven evolution**. A licença MIT do projeto e os avisos aplicáveis ao código original e de terceiros serão preservados no repositório e nos artefatos distribuídos.
 
@@ -24,6 +24,8 @@ O PipoRouter deve ajudar usuários a conhecer, controlar e aproveitar seus recur
 Otimizações sem benefício demonstrado e melhorias de escala ficam no backlog. Worker dedicado, novas otimizações SQLite, revisão de índices e PostgreSQL só ganham prioridade quando houver necessidade medida.
 
 O saldo indicativo de franquia informa o operador com a janela, as hipóteses e as lacunas que sustentam o cálculo. A API administrativa disponibiliza a visão diagnóstica por organização e grupo. A autorização de consumo terá política própria, decisão por tentativa e reserva atômica. [Contrato da API de conciliação](QUOTA-RECONCILIATION.md#api-administrativa-de-conciliação)
+
+O Quota Dashboard v1 disponibiliza essas informações no Dashboard administrativo com leitura local e atualização manual. A configuração de organizações e grupos pela interface é a próxima evolução de usabilidade desse painel. [Quota Dashboard v1](QUOTA-RECONCILIATION.md#quota-dashboard-v1)
 
 O Attempt Registry preserva identidade, causalidade, estados e evidências de consumo em metadados operacionais independentes do conteúdo das conversas. O piloto OpenAI direto usa Observation, fica desativado por padrão e registra reenvios observáveis. A recuperação foi validada com prova de saída da instância e a cobertura permanece indeterminada para caminhos opacos e períodos sem observação. A leitura administrativa de conciliação separa as observações do Registry dos subtotais históricos e mantém explícitas as lacunas. [Attempt Registry](ATTEMPT-REGISTRY.md)
 

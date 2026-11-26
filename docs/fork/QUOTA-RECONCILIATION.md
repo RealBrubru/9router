@@ -135,3 +135,21 @@ Na homologação real integrada, o auxiliar local `checks.py` montava `modelRows
 A Reconciliation lê as linhas dimensionais da organização antes desse rollup e considera os buckets válidos para o horizonte consultado. `remote.unclassifiedModel` agrega os modelos sem classificação de grupo que chegam a essa categoria. Modelos configurados para outro grupo entram em `outsideGroup`. O tier `incentivized-tier` informa a classificação administrativa do consumo e a atribuição ao grupo depende da configuração local. No snapshot conferido, GPT-6 Luna estava sem grupo configurado e havia outros modelos nessa categoria. A classificação recalculada nas linhas do mesmo snapshot coincidiu com os subtotais remotos da Reconciliation para os dois grupos verificados. [Seleção das linhas](../../src/lib/quota/reconciliationReadService.js) · [Classificação do motor](../../src/lib/quota/reconciliation.js)
 
 As duas chamadas reais confirmaram a correspondência agregada entre a variação remota para o modelo incentivado e o consumo local do experimento. A Reconciliation continuou sem prova individual de inclusão, sem vínculo explícito entre Registry e histórico, com cobertura local parcial, `dataAsOf: null` e saldo indicativo desconhecido. [Resultado da homologação](RUNBOOK.md#resultado-da-homologação-real-integrada)
+
+## Quota Dashboard v1
+
+A entrada **Franquias** (**Quotas**) leva a `/dashboard/quota-manager`. O Quota Tracker continua disponível no caminho anterior. A página de franquias usa a sessão administrativa e consulta três rotas locais.
+
+| Rota GET | Uso na tela |
+| --- | --- |
+| `/api/quota/organizations` | Lista paginada das organizações acessíveis à sessão. |
+| `/api/quota/organizations/{orgId}/snapshots` | Usage diário para grupos, modelos, renovação configurada e diagnóstico. Costs para lançamentos paginados do dia atual ou anterior, em UTC. |
+| `/api/quota/organizations/{orgId}/groups/{groupId}/reconciliation` | Consumo por fonte, disponibilidade indicativa e qualidade da informação. |
+
+O único acréscimo ao contrato HTTP é `renewal: { time, timeZone }` nos snapshots, para mostrar a renovação configurada mesmo quando a política não é suportada pela conciliação. A tela mantém a janela de quota da Reconciliation separada da janela consultada pelo Collector.
+
+O saldo corrente ou histórico vem do motor, com sua própria janela de referência. Com saldo indeterminado, a tela preserva os subtotais observados, mostra suas limitações e conserva zero somente quando a fonte fornece esse valor. O agregado remoto sem classificação aparece uma vez no escopo da organização e depende da disponibilidade da Reconciliation. O Registry pode incluir tentativas sem grupo demonstrável. O histórico legado aparece no diagnóstico e pode se sobrepor ao Registry. Costs mostra lançamentos e moedas reportados, inclusive zero explícito e valores ausentes, sem atribuição ao grupo ou uso dos custos teóricos do Analytics.
+
+A atualização é manual. Requisições em curso desabilitam o botão e leituras superadas por outra seleção são canceladas no navegador. A lista lê até dez páginas de organizações. A tela sinaliza esse limite, os limites da API para grupos e modelos, o truncamento local e a disponibilidade de mais páginas de custos. O diagnóstico separa atualidade da coleta, completude do provedor e cobertura local, preservando `dataAsOf` desconhecido.
+
+A validação usa testes offline das rotas com SQLite temporário e um roteiro Chromium com respostas sintéticas, incluindo layout móvel e português brasileiro. Execute o roteiro em um servidor Next.js isolado, com banco temporário, credenciais fictícias e coletor desativado. A variável opcional `CHROMIUM_EXECUTABLE` permite selecionar um executável local. [Roteiro Chromium](../../tests/fixtures/quota-dashboard-browser.mjs) · [Testes da leitura](../../tests/unit/quota-dashboard-data.test.js)

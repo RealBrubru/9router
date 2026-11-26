@@ -99,6 +99,13 @@ const getPageInfo = (pathname) => {
       icon: "vpn_key",
       breadcrumbs: [],
     };
+  if (pathname === "/dashboard/quota-manager")
+    return {
+      title: "Quotas",
+      description: "Administrative usage and quota observations",
+      icon: "monitoring",
+      breadcrumbs: [],
+    };
   if (pathname.includes("/quota"))
     return {
       title: "Quota Tracker",

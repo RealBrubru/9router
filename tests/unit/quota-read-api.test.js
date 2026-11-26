@@ -124,6 +124,7 @@ describe("quota administrative read routes", () => {
       lastAttempt: { outcome: "success", window: { start, end } },
       schedule: { enabled: true, nextAt: 1_800_000_000_000, consecutiveFailures: 0 },
       groups: [{ id: "fixture-group" }],
+      renewal: { time: "00:00", timeZone: "UTC" },
     });
     expect(data.records.data).toEqual([
       { model, serviceTier: "incentivized-tier", incentive: "incentivized", input_tokens: 45, output_tokens: 14,

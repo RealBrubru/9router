@@ -254,6 +254,7 @@ export function createQuotaReadApi({
       return response({
         organization: publicOrganization(org),
         groups: publicGroups(org.config.groups),
+        renewal: { time: org.config.renewalTime, timeZone: org.config.timeZone },
         source: query.source,
         resolution: query.resolution,
         schedule: scheduleStatus(repository, org, query, schedulerEnabled(),

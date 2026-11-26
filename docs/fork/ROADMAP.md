@@ -36,7 +36,7 @@ O detalhamento da homologação está no [runbook](RUNBOOK.md#homologação-inic
 | 7.1.2c4 — Registry na conciliação | Adaptar evidências locais e lacunas ao serviço de leitura e à API administrativa | Concluída e aprovada. [Contrato](QUOTA-RECONCILIATION.md#evidência-local-do-attempt-registry) |
 | 7.1.2d — Homologação integrada | Validar Collector, Registry e Reconciliation na imagem do fork | Concluída no escopo sintético ARM64 e no piloto real OpenAI direto, com uma chamada JSON e uma SSE. [Resultados](RUNBOOK.md#homologação-integrada-do-quota-manager) |
 | Conciliação fina | Avaliar buckets de minuto, revisões, chaves compartilhadas e virada em observação | Backlog. Coleta por minuto depende de homologação autorizada. |
-| 7.1.3 — Quota Dashboard | Acompanhar franquias, configurar grupos e mostrar origem, cobertura e atualidade | Próximo incremento. Priorizar a visualização dos snapshots e de suas limitações. Exibir saldo quando a conciliação o sustentar. |
+| 7.1.3 — Quota Dashboard | Acompanhar franquias, configurar grupos e mostrar origem, cobertura e atualidade | Interface de leitura aprovada visualmente com dados sintéticos. Implantação para validação com os dados já coletados e publicação aguardam aceite. Planejar a configuração administrativa pela interface como evolução de usabilidade da v1. [Escopo implementado](QUOTA-RECONCILIATION.md#quota-dashboard-v1) |
 | 7.1.4 — Quota Enforcement | Aplicar franquias na elegibilidade por conexão e no Smart Router | Planejada. Exige decisão explícita por tentativa, organização, política e janela, com reserva atômica. Depende de conciliação e de elegibilidade em retries, combos e fallbacks. |
 
 Os três primeiros incrementos preservam o roteamento atual. A etapa 7.1.1 encerra o aceite da coleta passiva. A renovação UTC foi homologada retrospectivamente. Defasagem, classificação incompleta de modelos e observação direta dos estados transitórios da virada seguem abertas. [Homologação real e limitações](QUOTA-COLLECTOR.md#homologação-real-na-imagem-arm64) · [Experimento administrativo anterior](RUNBOOK.md#experimento-com-a-openai-admin-usage-api)
@@ -51,6 +51,10 @@ Os três primeiros incrementos preservam o roteamento atual. A etapa 7.1.1 encer
 
 Os escopos estão nas [propostas de descoberta e interface](DECISIONS.md#propostas-de-descoberta-e-interface).
 
+## Transição para o PipoRouter
+
+Após a homologação e publicação do Quota Dashboard, verificar a disponibilidade de `RealBrubru/piporouter` e revisar licenças, ativos, automações e telemetria herdada. Criar o repositório independente preservando `RealBrubru/9router`, o histórico Git, os autores, as licenças e as atribuições. Preparar `README.md` em inglês, `README.pt-BR.md` em português, descrição, slogan, posicionamento e identidade visual inicial. Configurar proteção de branches e remotes para incorporar seletivamente melhorias do upstream original. [Decisão de transição](DECISIONS.md#aprovadas)
+
 ## Backlog estratégico do projeto independente
 
 Propostas futuras para o [PipoRouter](PROJECT.md#direção-para-um-projeto-independente), sem ordem rígida de implementação.
@@ -59,3 +63,4 @@ Propostas futuras para o [PipoRouter](PROJECT.md#direção-para-um-projeto-indep
 - **Privacidade e comunicação externa.** Remover o Google Analytics vinculado ao upstream, revisar a telemetria e a comunicação com serviços externos e adotar telemetria desativada por padrão.
 - **Builds e publicação.** Versionar o lockfile, buscar builds reproduzíveis, preparar infraestrutura própria de CI/CD e desenvolver mecanismos próprios de publicação e atualização.
 - **Evolução técnica.** Modularizar a arquitetura incrementalmente, migrar gradualmente para TypeScript, redesenhar a interface e avaliar a arquitetura de persistência em etapa própria.
+- **Redesign do Quota Dashboard.** Planejar cartões mais compactos, barras de progresso quando os dados sustentarem a comparação, linguagem acessível a usuários não técnicos, melhor hierarquia visual e distinção mais evidente entre consumo observado, informação desconhecida e disponibilidade indeterminada.
