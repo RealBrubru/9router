@@ -4,6 +4,8 @@ A investigação **7.1.2a** confirmou que o histórico local registra consumo na
 
 A função é pura. A etapa **7.1.2b+** adapta os dados locais. A **7.1.2b++** expõe a visão diagnóstica na API administrativa. O Attempt Registry está em piloto para envios OpenAI diretos e seus reenvios observáveis, com causalidade registrada e desligado por padrão. As observações do piloto ainda não alimentam a conciliação nem certificam cobertura local. A homologação da coleta em granularidade de minuto e o controle de envio têm etapas próprias. [Motor](../../src/lib/quota/reconciliation.js) · [Attempt Registry](ATTEMPT-REGISTRY.md) · [Roadmap](ROADMAP.md#incrementos-do-quota-manager)
 
+Para a 7.1.2c4, um encerramento recuperado continua sujeito ao que já estava disponível no SQLite ou chegou como evidência tardia. Cobertura local exige evidência própria para o escopo e o intervalo avaliados. Abertura ou fechamento de época e correspondência entre contagens do benchmark não certificam a população de inferências. [Recuperação e cobertura](ATTEMPT-REGISTRY.md#recuperação-cobertura-e-durabilidade)
+
 ## Contrato de entrada
 
 `reconcileQuota({ policy, evaluatedAt, knowledgeAt?, localCoverage?, observations?, attempts?, evidence? })` avalia uma organização, grupo, revisão de política e unidade. As listas omitidas começam vazias. Datas são inteiros seguros em **milissegundos desde a época Unix**. Janelas usam `[start, end)`. A integração futura deve converter os segundos do Collector explicitamente.

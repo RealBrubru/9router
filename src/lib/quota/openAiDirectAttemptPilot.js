@@ -173,8 +173,28 @@ function attemptObserver({ write, now, db, connectionId, sentModel, onResponse, 
 export function createOpenAiDirectAttemptPilot({ openDb = () => getAdapterSync(), env = process.env, now = Date.now,
   reportGap = () => console.warn("[Attempt Registry] OpenAI direct pilot coverage is indeterminate") } = {}) {
   let current;
-  let pendingGap;
+  let pendingRetirement;
+  let enabled = false;
+  let generation = 0;
   const instanceId = randomUUID();
+
+  function flushRetirement(db) {
+    if (pendingRetirement?.epoch.db !== db) return;
+    const { epoch, occurredAt, reason } = pendingRetirement;
+    if (reason) epoch.repo.markCoverageGap({ id: epoch.id, occurredAt, reason });
+    else epoch.repo.closeEpoch({ id: epoch.id, occurredAt });
+    pendingRetirement = null;
+  }
+
+  function retire(epoch, reason) {
+    current = null;
+    pendingRetirement = { epoch, occurredAt: now(), reason };
+    try { flushRetirement(epoch.db); } catch {}
+  }
+
+  function warnCoverageGap() {
+    try { reportGap(); } catch {}
+  }
 
   function prepare(requestId, receivedAt, requestedModel, {
     connectionId, sentModel, purpose, submissionCause, previousAttemptId, onResponse, onOpaqueDispatch,
@@ -186,23 +206,12 @@ export function createOpenAiDirectAttemptPilot({ openDb = () => getAdapterSync()
     function gap() {
       if (failed) return;
       failed = true;
-      if (epoch && current === epoch) {
-        pendingGap = { epoch, occurredAt: now() };
-        try {
-          epoch.repo.markCoverageGap({ id: epoch.id, occurredAt: pendingGap.occurredAt, reason: "storage_failure" });
-          pendingGap = null;
-        } catch {}
-        current = null;
-      }
-      try { reportGap(); } catch {}
+      if (epoch && current === epoch) retire(epoch, "storage_failure");
+      warnCoverageGap();
     }
     try {
       const db = openDb();
-      if (pendingGap?.epoch.db === db) {
-        const { epoch: previous, occurredAt } = pendingGap;
-        previous.repo.markCoverageGap({ id: previous.id, occurredAt, reason: "storage_failure" });
-        pendingGap = null;
-      }
+      flushRetirement(db);
       if (current?.db !== db) {
         epoch = { db, id: randomUUID(), repo: createAttemptRegistryRepository(db, { now }) };
         epoch.repo.openEpoch({
@@ -237,7 +246,17 @@ export function createOpenAiDirectAttemptPilot({ openDb = () => getAdapterSync()
   }
 
   return function begin() {
-    if (env.ATTEMPT_REGISTRY_OPENAI_DIRECT !== "true") return null;
+    if (env.ATTEMPT_REGISTRY_OPENAI_DIRECT !== "true") {
+      if (enabled) {
+        enabled = false;
+        generation++;
+        if (current) retire(current, null);
+        if (pendingRetirement && !pendingRetirement.reason) warnCoverageGap();
+      }
+      return null;
+    }
+    enabled = true;
+    const requestGeneration = generation;
     const requestId = randomUUID();
     const receivedAt = now();
     return {
@@ -253,6 +272,7 @@ export function createOpenAiDirectAttemptPilot({ openDb = () => getAdapterSync()
               skip() { previousAttemptId = null; currentObserver = null; },
               current() { return currentObserver; },
               prepare(details, submissionCause = cause) {
+                if (requestGeneration !== generation) return null;
                 const purpose = !submissionCause ? "primary" : submissionCause === "connection_fallback" ? "fallback" : "retry";
                 const attempt = prepare(requestId, receivedAt, requestedModel, {
                   ...details, purpose, submissionCause, previousAttemptId,

@@ -29,8 +29,8 @@ O detalhamento da homologação está no [runbook](RUNBOOK.md#homologação-inic
 | 7.1.2c1 — Especificação do Attempt Registry | Inventariar os despachos e definir identidade, estados e cobertura | Concluída e aprovada. |
 | 7.1.2c2 — Migration, repositório e estados | Persistir tentativas, eventos e épocas de cobertura | Concluída e aprovada. [Attempt Registry](ATTEMPT-REGISTRY.md) |
 | 7.1.2c3a — Piloto OpenAI direto | Instrumentar o primeiro envio do Chat Completions, JSON e SSE | Concluída e aprovada. [Escopo do piloto](ATTEMPT-REGISTRY.md#piloto-openai-direto) |
-| 7.1.2c3b — Retries e reenvios | Registrar causalidade nos retries do executor, fallbacks de conexão, reenvios após refresh e replays explícitos do transporte piloto | Implementada e testada com transporte simulado. Em revisão. [Matriz de cobertura](ATTEMPT-REGISTRY.md#piloto-openai-direto) |
-| 7.1.2c3c — Recuperação e cobertura | Validar recuperação após crash, cobertura por caminho e desempenho sob concorrência | Planejada. |
+| 7.1.2c3b — Retries e reenvios | Registrar causalidade nos retries do executor, fallbacks de conexão, reenvios após refresh e replays explícitos do transporte piloto | Concluída e aprovada. [Matriz de cobertura](ATTEMPT-REGISTRY.md#piloto-openai-direto) |
+| 7.1.2c3c — Recuperação e cobertura | Validar recuperação após crash, cobertura por caminho e desempenho sob concorrência | Validada em processos isolados e transporte simulado. Em revisão. [Benchmark](ATTEMPT-REGISTRY-BENCHMARK.md) |
 | 7.1.2c4 — Cobertura na conciliação | Usar o corte de conhecimento e avaliar cobertura local demonstrável | Planejada. |
 | 7.1.2d — Conciliação fina | Avaliar buckets de minuto, revisões, chaves compartilhadas e virada em observação | Planejada. Coleta por minuto depende de homologação autorizada. |
 | 7.1.3 — Quota Dashboard | Acompanhar franquias, configurar grupos e mostrar origem, cobertura e atualidade | Planejada. A configuração e a visualização dos snapshots podem começar após a coleta. Exibir saldo quando a conciliação o sustentar. |
