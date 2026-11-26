@@ -5,12 +5,20 @@ import { performance } from "node:perf_hooks";
 import { expect, it, vi } from "vitest";
 import { createBetterSqliteAdapter } from "../../src/lib/db/adapters/betterSqliteAdapter.js";
 import initial from "../../src/lib/db/migrations/001-initial.js";
+import { createAttemptProfiler } from "../fixtures/attempt-registry-profiler.mjs";
 
-const fixture = vi.hoisted(() => ({ db: null, fetch: null }));
+const fixture = vi.hoisted(() => ({ db: null, fetch: null, profiler: null }));
 vi.mock("@/lib/db/driver.js", async original => ({
   ...await original(), getAdapter: async () => fixture.db, getAdapterSync: () => fixture.db,
 }));
 vi.mock("undici", async original => ({ ...await original(), fetch: (...args) => fixture.fetch(...args) }));
+vi.mock("@/lib/db/repos/attemptRegistryRepo.js", async original => {
+  const actual = await original();
+  return { ...actual, createAttemptRegistryRepository(...args) {
+    const repo = actual.createAttemptRegistryRepository(...args);
+    return fixture.profiler?.repository(repo) ?? repo;
+  } };
+});
 
 const model = "gpt-5-mini";
 const endpoint = "https://api.openai.com/v1/chat/completions";
@@ -20,6 +28,7 @@ const sseChunk = value => encoder.encode(`data: ${JSON.stringify(value)}\n\n`);
 const retireFlag = "ATTEMPT_REGISTRY_OPENAI_DIRECT";
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const round = value => Number(value.toFixed(3));
+const profile = process.env.RUN_ATTEMPT_PROFILE === "1";
 
 function percentiles(samples) {
   if (!samples.length) return null;
@@ -101,8 +110,10 @@ async function fileBytes(file) {
 async function runCell({ post, updateSettings, disablePilot, root, stream, enabled, concurrency, warnings }) {
   const file = join(root, `${stream}-${enabled}-${concurrency}.sqlite`);
   const db = createBetterSqliteAdapter(file);
+  const profiler = profile ? createAttemptProfiler(db) : null;
+  fixture.profiler = profiler;
   const sql = { transactions: [], registryStatements: [], errors: 0, busy: 0 };
-  fixture.db = measureDb(db, sql);
+  fixture.db = measureDb(profiler?.adapter ?? db, sql);
   const calls = new Map();
   let id = 1000;
   fixture.fetch = (url, options) => {
@@ -146,9 +157,11 @@ async function runCell({ post, updateSettings, disablePilot, root, stream, enabl
       VALUES ('fixture-account', 'openai', 'apikey', 'fixture', 1, ?, 'fixture', 'fixture')`,
     [JSON.stringify({ apiKey: "fixture-provider-secret" })]);
     vi.stubEnv(retireFlag, enabled ? "true" : "false");
+    profiler?.phase("warm");
     const warmBatches = Math.max(2, Math.ceil(20 / concurrency));
     for (let i = 0; i < warmBatches; i++) await batch(concurrency);
     await history(warmBatches * concurrency);
+    profiler?.phase("idle");
     db.exec("DELETE FROM inferenceAttempts; DELETE FROM inferenceRequests; DELETE FROM usageHistory; DELETE FROM usageDaily; VACUUM;");
     db.checkpoint();
 
@@ -164,15 +177,19 @@ async function runCell({ post, updateSettings, disablePilot, root, stream, enabl
     let elapsed = 0;
     const rounds = 3;
     const batches = Math.max(2, Math.ceil(120 / concurrency));
+    profiler?.startLoad();
     for (let i = 0; i < rounds; i++) {
       for (let j = 0; j < batches; j++) {
+        const loopProbe = profiler?.probeBatch();
         const result = await batch(concurrency);
         elapsed += result.elapsed;
         samples.push(...result.results);
         rssPeak = Math.max(rssPeak, process.memoryUsage.rss());
+        if (loopProbe) await loopProbe;
       }
       await history(samples.length);
     }
+    profiler?.stopLoad();
 
     const expected = enabled ? samples.length : 0;
     const persisted = db.get("SELECT COUNT(*) n FROM inferenceAttempts WHERE state = 'closed'").n;
@@ -188,7 +205,15 @@ async function runCell({ post, updateSettings, disablePilot, root, stream, enabl
       expect(registry).not.toContain(privateValue);
     }
     const walBytes = await fileBytes(file + "-wal") - baseWal;
+    const checkpointStarted = performance.now();
     db.checkpoint();
+    const checkpointMs = performance.now() - checkpointStarted;
+    if (profiler) {
+      profiler.phase("coverage");
+      vi.stubEnv(retireFlag, "false");
+      disablePilot();
+      profiler.phase("idle");
+    }
     return {
       protocol: stream ? "SSE" : "JSON", enabled, concurrency, rounds, batches, samples: samples.length,
       preDispatch: percentiles(samples.map(sample => sample.preDispatch)),
@@ -200,15 +225,18 @@ async function runCell({ post, updateSettings, disablePilot, root, stream, enabl
       registryStatements: percentiles(sql.registryStatements), registryStatementCount: sql.registryStatements.length,
       sqliteErrors: sql.errors, sqliteBusy: sql.busy, registryWarnings: warnings.count,
       rssStart, rssPeak, dbBytes: await fileBytes(file) - baseDb, walBytes, expected, persisted,
+      ...(profiler ? { checkpointMs, profile: profiler.report() } : {}),
     };
   } finally {
+    profiler?.stopLoad();
     vi.stubEnv(retireFlag, "false");
     disablePilot();
     db.close();
+    fixture.profiler = null;
   }
 }
 
-it.runIf(process.env.RUN_ATTEMPT_BENCH === "1")("compares OpenAI direct registry performance offline", async () => {
+it.runIf(profile || process.env.RUN_ATTEMPT_BENCH === "1")("compares OpenAI direct registry performance offline", async () => {
   const root = await mkdtemp(join(tmpdir(), "attempt-registry-benchmark-"));
   vi.stubEnv("DATA_DIR", root);
   vi.stubEnv("NO_PROXY", "api.openai.com");
@@ -225,7 +253,7 @@ it.runIf(process.env.RUN_ATTEMPT_BENCH === "1")("compares OpenAI direct registry
     const { POST: post } = await import("@/app/api/v1/chat/completions/route.js");
     const { beginOpenAiDirectAttempt: disablePilot } = await import("@/lib/quota/openAiDirectAttemptPilot.js");
     for (const stream of [false, true]) {
-      const levels = [1, 10, 50, 100];
+      const levels = profile ? [1, 100] : [1, 10, 50, 100];
       for (const [index, concurrency] of levels.entries()) {
         for (const enabled of index % 2 ? [true, false] : [false, true]) {
           const result = await runCell({ post, updateSettings, disablePilot, root, stream, enabled, concurrency, warnings });

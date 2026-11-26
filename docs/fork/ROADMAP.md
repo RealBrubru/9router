@@ -21,7 +21,7 @@ O detalhamento da homologação está no [runbook](RUNBOOK.md#homologação-inic
 
 | Etapa | Entrega | Situação |
 | --- | --- | --- |
-| 7.1.1 — Quota Collector | Coleta passiva por organização, com SQLite e API interna de leitura | Homologação real (7.1.1e) concluída em ARM64 com OpenAI Usage e Costs. Retomada do agendamento confirmada após reinício. |
+| 7.1.1 — Quota Collector | Coleta passiva por organização, com SQLite e API interna de leitura | Homologação real (7.1.1e) concluída em ARM64 com OpenAI Usage e Costs. Retomada após reinício e renovação diária UTC validadas. [Verificação retrospectiva](QUOTA-COLLECTOR.md#renovação-utc-homologada-retrospectivamente) |
 | 7.1.2a — Investigação | Inventariar o consumo local e remoto e definir a estratégia de conciliação | Concluída e aprovada. |
 | 7.1.2b — Cálculo passivo | Motor puro, saldo indicativo corrente ou histórico, qualidade da observação e avaliação pelo conhecimento disponível | Aprovado e consolidado localmente. [Contrato](QUOTA-RECONCILIATION.md) |
 | 7.1.2b+ — Reconciliation Read Service | Adaptar a leitura dos snapshots dimensionais e do histórico local, com cobertura e proveniência explícitas | Aprovado e consolidado localmente. [Serviço de leitura](QUOTA-RECONCILIATION.md#serviço-interno-de-leitura) |
@@ -30,13 +30,14 @@ O detalhamento da homologação está no [runbook](RUNBOOK.md#homologação-inic
 | 7.1.2c2 — Migration, repositório e estados | Persistir tentativas, eventos e épocas de cobertura | Concluída e aprovada. [Attempt Registry](ATTEMPT-REGISTRY.md) |
 | 7.1.2c3a — Piloto OpenAI direto | Instrumentar o primeiro envio do Chat Completions, JSON e SSE | Concluída e aprovada. [Escopo do piloto](ATTEMPT-REGISTRY.md#piloto-openai-direto) |
 | 7.1.2c3b — Retries e reenvios | Registrar causalidade nos retries do executor, fallbacks de conexão, reenvios após refresh e replays explícitos do transporte piloto | Concluída e aprovada. [Matriz de cobertura](ATTEMPT-REGISTRY.md#piloto-openai-direto) |
-| 7.1.2c3c — Recuperação e cobertura | Validar recuperação após crash, cobertura por caminho e desempenho sob concorrência | Validada em processos isolados e transporte simulado. Em revisão. [Benchmark](ATTEMPT-REGISTRY-BENCHMARK.md) |
+| 7.1.2c3c — Recuperação e cobertura | Validar recuperação após crash, cobertura por caminho e desempenho sob concorrência | Aprovada no escopo de processos isolados e transporte simulado. [Benchmark](ATTEMPT-REGISTRY-BENCHMARK.md) |
+| 7.1.2c3c+ — Profiling do Attempt Registry | Medir composição das transações e identificar candidatos de otimização | Investigação offline para revisão. [Resultados e alternativas](ATTEMPT-REGISTRY-PROFILING.md) |
 | 7.1.2c4 — Cobertura na conciliação | Usar o corte de conhecimento e avaliar cobertura local demonstrável | Planejada. |
 | 7.1.2d — Conciliação fina | Avaliar buckets de minuto, revisões, chaves compartilhadas e virada em observação | Planejada. Coleta por minuto depende de homologação autorizada. |
 | 7.1.3 — Quota Dashboard | Acompanhar franquias, configurar grupos e mostrar origem, cobertura e atualidade | Planejada. A configuração e a visualização dos snapshots podem começar após a coleta. Exibir saldo quando a conciliação o sustentar. |
 | 7.1.4 — Quota Enforcement | Aplicar franquias na elegibilidade por conexão e no Smart Router | Planejada. Exige decisão explícita por tentativa, organização, política e janela, com reserva atômica. Depende de conciliação e de elegibilidade em retries, combos e fallbacks. |
 
-Os três primeiros incrementos preservam o roteamento atual. A etapa 7.1.1 encerra o aceite da coleta passiva. Defasagem, classificação incompleta de modelos e renovação UTC em tempo real seguem registradas para as etapas seguintes. [Homologação real e limitações](QUOTA-COLLECTOR.md#homologação-real-na-imagem-arm64) · [Experimento administrativo anterior](RUNBOOK.md#experimento-com-a-openai-admin-usage-api)
+Os três primeiros incrementos preservam o roteamento atual. A etapa 7.1.1 encerra o aceite da coleta passiva. A renovação UTC foi homologada retrospectivamente. Defasagem, classificação incompleta de modelos e observação direta dos estados transitórios da virada seguem abertas. [Homologação real e limitações](QUOTA-COLLECTOR.md#homologação-real-na-imagem-arm64) · [Experimento administrativo anterior](RUNBOOK.md#experimento-com-a-openai-admin-usage-api)
 
 ## Backlog sem ordem rígida de implementação
 

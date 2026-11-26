@@ -101,4 +101,12 @@ Na etapa **7.1.1e**, o proprietário homologou manualmente a imagem ARM64 `realb
 
 Os totais da organização, o conteúdo dos snapshots e os horários absolutos da instância ficam no registro privado de homologação. O procedimento reutilizável e o diagnóstico do HTTP 404 do auxiliar estão no [runbook](RUNBOOK.md#operação-da-homologação-do-quota-collector).
 
-**Limitações.** A defasagem efetiva do provedor continua desconhecida e `dataAsOf` permanece nulo. `collectedAt` indica quando o coletor observou os dados, e a cobertura do dia corrente pode ser parcial. A classificação de modelos nos grupos de franquia está incompleta. A virada às 00:00 UTC foi exercitada com relógio simulado e segue pendente em tempo real. O Collector é passivo. A integração com o motor de conciliação, a exposição de saldo operacional e o Enforcement permanecem como etapas futuras. [Cálculo passivo](QUOTA-RECONCILIATION.md)
+### Renovação UTC homologada retrospectivamente
+
+Após a virada de 25 para 26 de novembro de 2026, a verificação manual encontrou a instância saudável, os agendadores de Usage e Costs operacionais e zero falhas consecutivas, sem reiniciar a instância ou executar novas inferências durante a verificação. A janela encerrada permaneceu disponível com cobertura temporal `full` e sem lacunas registradas. A nova janela começou às 00:00 UTC e continha um bucket presente e vazio, sem carregar os registros do dia anterior.
+
+A observação mais recente de Usage estava nove segundos atrás do horizonte consultado. Esse intervalo não mede a defasagem do provedor e `dataAsOf` continuou nulo. Na janela encerrada, os registros de inferência observados eram incentivados, as quantidades de Usage e Costs coincidiram no conjunto comparado e todas as linhas monetárias devolvidas tinham valor explicitamente igual a zero. Essa comparação é específica do conjunto e da modalidade homologados. Os totais e os snapshots detalhados ficam no registro privado.
+
+O aceite retrospectivo verifica as janelas disponíveis depois da virada. Os estados transitórios no instante da renovação ficaram fora da observação direta. Um bucket vazio informa o conteúdo devolvido naquela coleta e permite que uso ainda defasado apareça em revisão posterior.
+
+**Limitações.** A defasagem efetiva do provedor continua desconhecida. `collectedAt` indica quando o coletor observou os dados e a cobertura do dia corrente pode ser parcial. A classificação de modelos nos grupos de franquia está incompleta. O Collector é passivo. A integração com o motor de conciliação, a exposição de saldo operacional e o Enforcement permanecem em etapas futuras. [Cálculo passivo](QUOTA-RECONCILIATION.md)
