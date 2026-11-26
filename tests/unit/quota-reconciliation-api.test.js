@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { createAttemptRegistryRepository } from "../../src/lib/db/repos/attemptRegistryRepo.js";
 
 const route = "/api/quota/organizations";
 const groupId = "fixture-group";
@@ -99,6 +101,27 @@ beforeAll(async () => {
   await collect(repo, "revised");
   await collect(repo, "revised", { amount: 100 });
   await collect(repo, "zero", { rows: [] });
+
+  repo.putOrganization(organization("registry"));
+  await collect(repo, "registry");
+  db.exec(`INSERT INTO providerConnections(id, provider, authType, data, createdAt, updatedAt)
+    VALUES ('fixture-private-registry-connection', 'openai', 'apikey', '{}', 'fixture', 'fixture')`);
+  repo.bindConnection({ organizationId: "registry", connectionId: "fixture-private-registry-connection",
+    apiKeyId: "fixture-registry-administrative-key", validFrom: start });
+  const registry = createAttemptRegistryRepository(db, { now: () => clock });
+  const epochId = randomUUID();
+  const attemptId = randomUUID();
+  registry.openEpoch({ id: epochId, instanceId: randomUUID(), instrumentationVersion: "fixture", operation: "chat",
+    route: "chat_completions", transport: "http", barrierCertified: false, openedAt: start });
+  const command = { occurredAt: start + 1, knownAt: start + 1 };
+  registry.prepare({ ...command, eventId: randomUUID(), request: { id: randomUUID(), receivedAt: start, route: "chat_completions" },
+    attempt: { id: attemptId, epochId, provider: "openai", connectionId: "fixture-private-registry-connection", purpose: "primary" } });
+  const mutation = (expectedVersion, details) => ({ ...command, attemptId, eventId: randomUUID(), expectedVersion, ...details });
+  registry.markDispatchPossible(mutation(1, { binding: { status: "configured", organizationId: "registry", validFrom: start }, sentModel: usageRow.model }));
+  registry.acknowledge(mutation(2, { source: "transport", providerAccepted: "unknown", httpStatus: 200 }));
+  registry.recordModelAndUsage(mutation(3, { usageEventId: randomUUID(), returnedModel: usageRow.model,
+    usage: { quality: "measured", source: "provider", completeness: "complete", inputTokens: "19", outputTokens: "144" } }));
+  registry.finish(mutation(5, { state: "closed", outcome: "completed" }));
 
   db.run(`INSERT INTO providerConnections(id, provider, authType, data, createdAt, updatedAt)
     VALUES ('fixture-connection', 'openai', 'apikey', ?, 'fixture', 'fixture')`,
@@ -230,6 +253,21 @@ describe("administrative quota reconciliation route", () => {
     const revised = await get({ organization: "revised" }).then(res => res.json());
     expect(revised.remote.incentivized).toBe("400");
     expect(revised.observations).toHaveLength(1);
+  });
+
+  it("exposes only Registry aggregates for an authorized organization", async () => {
+    expect((await get({ organization: "registry", cookie: delegated })).status).toBe(404);
+    expect((await get({ organization: "registry", cookie: null, headers: { authorization: "Bearer fixture-key" } })).status).toBe(401);
+    const response = await get({ organization: "registry" });
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const raw = await response.text();
+    expect(JSON.parse(raw)).toMatchObject({ local: { totals: { observed: null }, registry: {
+      totals: { observed: "163" }, bindings: { configured: 1, confirmed: 0 }, linkedHistoryRows: 0,
+    } }, observations: [{ dataAsOf: null }], remote: { incentivized: "600", gateway: null },
+    indicative: { amount: null, blockers: expect.arrayContaining([{ code: "local_coverage_partial" }]) } });
+    for (const privateField of ["fixture-private", "fixture-registry-administrative-key", "attemptId", "previousAttemptId", "epochId", "sentModel", "returnedModel", '"events"']) {
+      expect(raw).not.toContain(privateField);
+    }
   });
 
   it("reports unavailable history explicitly and uses safe error messages", async () => {

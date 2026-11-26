@@ -349,15 +349,18 @@ export function createAttemptRegistryRepository(db, { now = Date.now, verifyInac
     return { throughSequence: timestamp(throughSequence), knownAt: timestamp(now()) };
   }
 
-  function readAsKnownAt(attemptId, cutoff) {
+  function readAsKnownAt(attemptId, cutoff, { evaluatedAt } = {}) {
     opaqueId(attemptId);
     fields(cutoff, ["knownAt", "throughSequence"]);
     const { knownAt, throughSequence } = cutoff;
     requireValue(timestamp(knownAt) <= timestamp(now()));
     timestamp(throughSequence);
+    if (evaluatedAt !== undefined) requireValue(timestamp(evaluatedAt) <= knownAt);
     return read(() => {
       const events = db.all(`SELECT * FROM inferenceAttemptEvents WHERE attemptId = ? AND knownAt <= ? AND sequence <= ?
-        ORDER BY version`, [attemptId, knownAt, throughSequence]).map(decodeEvent);
+        ${evaluatedAt === undefined ? "" : "AND recordedAt <= ? AND occurredAt <= ?"}
+        ORDER BY version`, [attemptId, knownAt, throughSequence,
+        ...(evaluatedAt === undefined ? [] : [knownAt, evaluatedAt])]).map(decodeEvent);
       if (events.length === 0) return null;
       const { state, outcome, version } = events.at(-1);
       const { requestId, epochId, previousAttemptId, provider, connectionId, purpose } = getAttempt(attemptId);

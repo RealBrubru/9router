@@ -159,6 +159,7 @@ function publicReconciliation(view) {
   const { organizationId, groupId, unit } = scope;
   const { temporal, collection, completeness, local, external } = quality;
   const { amount, excess, status: indicativeStatus, referenceWindow, assumptions, limitations, blockers } = indicative;
+  const registry = provenance.local.registry;
   return {
     status: "available",
     scope: { organizationId, groupId, unit },
@@ -181,6 +182,13 @@ function publicReconciliation(view) {
       totals: pickFields(provenance.local.totals, ["observed", "estimated", "unknownEvents"]),
       limitations: provenance.local.reasons,
       truncated: provenance.local.truncated,
+      ...(registry ? { registry: {
+        totals: pickFields(registry.totals, ["observed", "partialKnown", "estimated"]),
+        counts: pickFields(registry.counts, ["measured", "partial", "estimated", "pending", "unknown", "notApplicable", "crossesWindow"]),
+        bindings: pickFields(registry.bindings, ["confirmed", "configured", "unknown"]),
+        purposes: pickFields(registry.purposes, ["primary", "retry", "fallback", "other"]),
+        ...pickFields(registry, ["linkedHistoryRows", "gapEpochs", "truncated"]),
+      } } : {}),
     },
     observations: provenance.remote.buckets.map(({ status, observedWindow, collectedAt, dataAsOf, issue }) =>
       ({ status, observedWindow: publicWindow(observedWindow), collectedAt, dataAsOf, ...(issue ? { issue } : {}) })),

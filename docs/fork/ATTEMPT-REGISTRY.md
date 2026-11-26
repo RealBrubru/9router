@@ -88,7 +88,7 @@ Em Observation, erros de armazenamento deixam a época indeterminada ou com lacu
 | Proxies, redirecionamentos internos, retries opacos do Undici ou do SDK, outros endpoints e provedores | Cobertura indeterminada. Uma resposta redirecionada deixa incerta a tentativa externa observável. |
 | Período entre épocas, banco indisponível e crash | Sem cobertura demonstrável. O estado é `unknown` ou `gap`, inclusive após fechamento limpo. |
 
-O cancelamento é observável quando o leitor do stream cancela ou o transporte reporta aborto. A igualdade entre chamadas ao transporte simulado e tentativas persistidas valida aquela população observada, sem certificar a população total do gateway. A integração com a Reconciliation fica para a 7.1.2c4.
+O cancelamento é observável quando o leitor do stream cancela ou o transporte reporta aborto. A igualdade entre chamadas ao transporte simulado e tentativas persistidas valida aquela população observada, sem certificar a população total do gateway. A 7.1.2c4 adapta essas observações para a [leitura diagnóstica de conciliação](QUOTA-RECONCILIATION.md#evidência-local-do-attempt-registry).
 
 ## Integração e backlog
 

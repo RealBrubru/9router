@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { createQuotaRepository } from "../db/repos/quotaRepo.js";
+import { createAttemptRegistryRepository } from "../db/repos/attemptRegistryRepo.js";
 import { normalizeQuotaQuery, quotaBucketWidth } from "./query.js";
 import { reconcileQuota } from "./reconciliation.js";
 
 const DAY_MS = 86_400_000;
 const MAX_HISTORY_ROWS = 10_000;
+const MAX_REGISTRY_ATTEMPTS = 1000;
 const validId = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,160}$/.test(value) && !/^sk-/i.test(value);
 const validTime = value => Number.isSafeInteger(value) && value >= 0 && value <= 8.64e15;
 const validCount = value => Number.isSafeInteger(value) && value >= 0;
@@ -242,6 +244,104 @@ function readLocalHistory(db, policy, provider, evaluatedAt, readAt) {
   };
 }
 
+function readRegistry(db, policy, provider, evaluation, legacy) {
+  if (!db.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'inferenceAttemptEvents'")) return null;
+  const { evaluatedAt, knowledgeAt, readAt } = evaluation;
+  const { organizationId } = policy.scope;
+  const registry = createAttemptRegistryRepository(db, { now: () => readAt });
+  const { throughSequence } = registry.captureReadCutoff();
+  if (!throughSequence) return null;
+  const cutoff = { knownAt: knowledgeAt, throughSequence };
+  const rows = db.all(`WITH candidates AS (
+    SELECT a.id, a.organizationId, a.epochId, r.receivedAt, epoch.gapAt,
+      CAST(link.usageHistoryId AS TEXT) AS linkedHistoryId,
+      EXISTS (SELECT 1 FROM quotaConnectionBindings b
+        WHERE b.organizationId = ? AND b.connectionId = a.connectionId
+          AND b.validFrom <= r.receivedAt AND (b.validTo IS NULL OR b.validTo > r.receivedAt)
+          AND NOT EXISTS (SELECT 1 FROM quotaConnectionBindings other
+            WHERE other.connectionId = b.connectionId AND other.organizationId <> b.organizationId)) AS candidate
+    FROM inferenceAttempts a JOIN inferenceRequests r ON r.id = a.requestId
+    JOIN inferenceCoverageEpochs epoch ON epoch.id = a.epochId
+    LEFT JOIN inferenceUsageLinks link ON link.attemptId = a.id
+    WHERE a.provider = ? AND r.receivedAt <= ? AND (a.organizationId IS NULL OR a.organizationId = ?)
+      AND EXISTS (SELECT 1 FROM inferenceAttemptEvents prepared WHERE prepared.attemptId = a.id AND prepared.version = 1
+        AND prepared.sequence <= ? AND prepared.recordedAt <= ? AND prepared.occurredAt <= ?)
+      AND NOT EXISTS (SELECT 1 FROM inferenceAttemptEvents terminal WHERE terminal.attemptId = a.id
+        AND terminal.sequence <= ? AND terminal.recordedAt <= ? AND terminal.occurredAt < ?
+        AND terminal.kind = 'finish' AND (terminal.state = 'not_sent' OR terminal.outcome = 'completed'))
+    ) SELECT * FROM candidates WHERE organizationId = ? OR candidate
+    ORDER BY receivedAt DESC, id LIMIT ?`, [organizationId, provider, evaluatedAt, organizationId,
+    throughSequence, knowledgeAt, evaluatedAt, throughSequence, knowledgeAt, policy.window.start, organizationId, MAX_REGISTRY_ATTEMPTS + 1]);
+  if (!rows.length) return null;
+
+  const attempts = [];
+  const events = [];
+  const counts = { measured: 0, partial: 0, estimated: 0, pending: 0, unknown: 0, notApplicable: 0, crossesWindow: 0 };
+  const bindings = { confirmed: 0, configured: 0, unknown: 0 };
+  const purposes = { primary: 0, retry: 0, fallback: 0, other: 0 };
+  const totals = { observed: null, partialKnown: null, estimated: null };
+  const gapEpochs = new Set();
+  const historyIds = new Set(legacy.events.map(event => event.id));
+  const targetGroup = model => policy.models.includes(model) ? "configured" : policy.excludedModels.includes(model) ? "other_group" : "unknown";
+  let linkedHistoryRows = 0;
+  for (const row of rows.slice(0, MAX_REGISTRY_ATTEMPTS)) {
+    const view = registry.readAsKnownAt(row.id, cutoff, { evaluatedAt });
+    if (!view) continue;
+    const binding = view.dispatch?.binding;
+    if (binding?.organizationId ? binding.organizationId !== organizationId : !row.candidate) continue;
+    const bindingStatus = binding?.status ?? "unknown";
+    const { version, state, outcome, purpose, previousAttemptId } = view.attempt;
+    const dispatch = view.events.find(event => event.kind === "dispatch");
+    const terminal = view.events.find(event => event.kind === "finish" || event.kind === "recover");
+    const start = dispatch?.occurredAt ?? view.events[0].occurredAt;
+    const closed = outcome === "completed" || state === "not_sent";
+    const end = Math.max(start + 1, closed ? terminal.occurredAt + 1 : evaluatedAt);
+    const crossesWindow = start < policy.window.start || end > policy.window.end;
+    const pending = terminal == null;
+    const { quality, completeness, explicitZero, inputTokens, outputTokens } = view.usage;
+    const sentModel = identifier(view.dispatch?.sentModel);
+    const returnedModel = identifier(view.returnedModel);
+    const sentGroup = targetGroup(sentModel);
+    const returnedGroup = targetGroup(returnedModel);
+    const classificationConflict = sentGroup !== "unknown" && returnedGroup !== "unknown" && sentGroup !== returnedGroup;
+    const model = classificationConflict ? null : returnedModel ?? sentModel;
+    const group = targetGroup(model);
+    if (group === "other_group") continue;
+    const rank = quality === "measured" ? completeness === "complete" ? "measured" : "partial"
+      : quality === "not_applicable" ? "notApplicable" : quality;
+    const amount = inputTokens !== null || outputTokens !== null ? String(BigInt(inputTokens ?? 0) + BigInt(outputTokens ?? 0)) : null;
+    const subtotal = { measured: "observed", partial: "partialKnown", estimated: "estimated" }[rank];
+    if (subtotal && amount !== null) totals[subtotal] = (totals[subtotal] ?? 0n) + BigInt(amount);
+    counts[rank]++;
+    if (pending) counts.pending++;
+    if (crossesWindow) counts.crossesWindow++;
+    bindings[bindingStatus]++;
+    purposes[Object.hasOwn(purposes, purpose) ? purpose : "other"]++;
+    if (row.gapAt !== null && row.gapAt <= knowledgeAt) gapEpochs.add(row.epochId);
+    if (historyIds.has(scopedReference(organizationId, "usageHistory-row", row.linkedHistoryId))) linkedHistoryRows++;
+    const id = scopedReference(organizationId, "attempt", row.id);
+    const knownAt = view.events.reduce((latest, event) => Math.max(latest, event.recordedAt), 0);
+    events.push({ id, requestId: scopedReference(organizationId, "request", view.request.id),
+      previousAttemptId: scopedReference(organizationId, "attempt", previousAttemptId), version, purpose,
+      submissionCause: view.events[0].details.submissionCause ?? null,
+      binding: bindingStatus, bindingValidFrom: binding?.validFrom ?? null,
+      window: { start, end }, crossesWindow, knownAt, state, outcome, group, sentModel, returnedModel,
+      usage: { quality, completeness, explicitZero, inputTokens, outputTokens, amount,
+        cachedInputTokens: view.usage.cachedInputTokens, reasoningTokens: view.usage.reasoningTokens },
+    });
+    if (rank === "notApplicable") continue;
+    const attributable = bindingStatus === "confirmed" && closed && group === "configured" && !crossesWindow;
+    const motorState = pending ? "pending" : attributable && rank === "measured" ? "observed"
+      : attributable && rank === "estimated" && completeness === "complete" ? "estimated" : "unknown";
+    attempts.push({ id, scope: policy.scope, window: { start, end }, knownAt, model, incentive: "unknown", state: motorState,
+      amount: ["observed", "estimated"].includes(motorState) ? amount : null });
+  }
+  const truncated = rows.length > MAX_REGISTRY_ATTEMPTS;
+  if (!events.length && !truncated) return null;
+  return { attempts, events, evidence: { totals: Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, value?.toString() ?? null])),
+    counts, bindings, purposes, linkedHistoryRows, gapEpochs: gapEpochs.size, truncated } };
+}
+
 /** Internal read-only view. The caller owns access control before exposing it. */
 export function createQuotaReconciliationReadService(db, { now = Date.now } = {}) {
   // sql.js's usual transaction schedules a file export even for SELECTs.
@@ -280,10 +380,19 @@ export function createQuotaReconciliationReadService(db, { now = Date.now } = {}
       const snapshot = repository.readSnapshot(organizationId, query, { history: true });
       const remote = readRemote(snapshot, policy, target, readAt);
       const localHistory = readLocalHistory(db, policy, organization.provider, target, readAt);
+      const registry = readRegistry(readDb, policy, organization.provider, evaluation, localHistory);
+      if (registry?.events.length) {
+        localHistory.coverage.status = "partial";
+        localHistory.reasons.push("observation_coverage_unproven", "legacy_and_registry_non_additive", "no_remote_overlap_proof",
+          ...(registry.evidence.bindings.configured || registry.evidence.bindings.unknown ? ["registry_binding_unconfirmed"] : []),
+          ...(registry.evidence.counts.crossesWindow ? ["registry_attribution_window_uncertain"] : []),
+          ...(registry.evidence.gapEpochs ? ["registry_coverage_gap"] : []));
+      }
+      if (registry?.evidence.truncated) localHistory.reasons.push("registry_read_truncated");
       const result = reconcileQuota({
         policy, evaluatedAt: target, knowledgeAt: cutoff, localCoverage: localHistory.coverage, observations: remote.observations,
         // A historical row cannot identify a dispatched attempt or certify a deduction.
-        attempts: [], evidence: [],
+        attempts: registry?.attempts ?? [], evidence: [],
       });
       const { consideredSubtotal: _remoteOnlySubtotal, ...indicative } = result.indicative;
       return {
@@ -297,7 +406,7 @@ export function createQuotaReconciliationReadService(db, { now = Date.now } = {}
             collectionStatus: result.quality.collection.status,
             issue: remote.issue, buckets: remote.buckets,
           },
-          local: localHistory,
+          local: registry ? { ...localHistory, registry: registry.evidence, attempts: registry.events } : localHistory,
         },
         result: {
           scope: result.scope,

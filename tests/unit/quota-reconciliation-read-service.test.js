@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBetterSqliteAdapter } from "../../src/lib/db/adapters/betterSqliteAdapter.js";
 import { createQuotaRepository } from "../../src/lib/db/repos/quotaRepo.js";
+import { createAttemptRegistryRepository } from "../../src/lib/db/repos/attemptRegistryRepo.js";
 import { buildCreateTableSql, TABLES } from "../../src/lib/db/schema.js";
 import { createQuotaReconciliationReadService } from "../../src/lib/quota/reconciliationReadService.js";
 
@@ -25,7 +27,8 @@ beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "quota-read-service-"));
   db = createBetterSqliteAdapter(path.join(tempDir, "fixture.sqlite"));
   for (const name of ["providerConnections", "usageHistory", "usageDaily", "quotaOrganizations", "quotaConnectionBindings",
-    "quotaBuckets", "quotaCollectionState"]) {
+    "quotaBuckets", "quotaCollectionState", "inferenceRequests", "inferenceCoverageEpochs", "inferenceAttempts",
+    "inferenceAttemptEvents", "inferenceUsageLinks"]) {
     db.exec(buildCreateTableSql(name, TABLES[name]));
     for (const sql of TABLES[name].indexes ?? []) db.exec(sql);
   }
@@ -80,6 +83,35 @@ function collect({ start = midnight, end = clock, resolution = "1d", filters, gr
 
 function read(options = {}) {
   return service.read({ organizationId: orgId, groupId, ...options });
+}
+
+function registryFixture() {
+  const registry = createAttemptRegistryRepository(db, { now: () => clock });
+  const epochId = randomUUID();
+  registry.openEpoch({ id: epochId, instanceId: randomUUID(), instrumentationVersion: "fixture", transport: "http",
+    operation: "chat", route: "chat_completions", barrierCertified: false, openedAt: midnight - minute });
+  function start({ at = midnight + 100, request, purpose = "primary", previousAttemptId, connectionId = "fixture-connection" } = {}) {
+    request ??= { id: randomUUID(), receivedAt: at, route: "chat_completions", requestedModel: "openai/fixture-chat-v1" };
+    const id = randomUUID();
+    let version = registry.prepare({ request, attempt: { id, epochId, provider: "openai", connectionId, purpose, previousAttemptId },
+      eventId: randomUUID(), occurredAt: at, knownAt: at }).version;
+    return { id, request, event(method, occurredAt, details, knownAt = occurredAt) {
+      const event = registry[method]({ attemptId: id, expectedVersion: version, eventId: randomUUID(), occurredAt, knownAt, ...details });
+      version = event.version;
+      return event;
+    } };
+  }
+  return { start, registry, epochId };
+}
+
+const measuredRegistryUsage = { quality: "measured", source: "provider", completeness: "complete",
+  inputTokens: "19", outputTokens: "144", reasoningTokens: "128", cachedInputTokens: "7" };
+
+function dispatchRegistry(attempt, at, status = "configured", validFrom = midnight) {
+  const binding = status === "unknown" ? { status } : { status, organizationId: orgId, validFrom,
+    ...(status === "confirmed" ? { credentialVersionId: randomUUID(), evidenceId: randomUUID() } : {}) };
+  attempt.event("markDispatchPossible", at, { binding, sentModel: "fixture-chat-v1" });
+  attempt.event("acknowledge", at, { source: "transport", httpStatus: 200, providerAccepted: "unknown" });
 }
 
 describe("quota reconciliation local read service", () => {
@@ -334,5 +366,113 @@ describe("quota reconciliation local read service", () => {
     expect(read().result.quality).toMatchObject({
       collection: { status: "recent" }, completeness: { status: "unknown" },
     });
+  });
+});
+
+describe("Registry evidence in quota reconciliation", () => {
+  it("keeps legacy unchanged when the registry has no attributable attempts", async () => {
+    connection();
+    bind();
+    usage();
+    await collect();
+    expect(read().provenance.local).not.toHaveProperty("registry");
+    expect(read().provenance.local.totals.observed).toBe("163");
+  });
+
+  it("keeps measured and legacy subtotals separate even for a durable history link or equal unlinked tokens", async () => {
+    connection();
+    bind();
+    usage();
+    usage({ timestamp: midnight + 1001 });
+    await collect();
+    const { start, registry } = registryFixture();
+    const attempt = start();
+    dispatchRegistry(attempt, midnight + 101, "confirmed");
+    attempt.event("recordUsage", midnight + 102, { usage: measuredRegistryUsage });
+    attempt.event("finish", midnight + 103, { state: "closed", outcome: "completed" });
+    expect(read().provenance.local.registry.linkedHistoryRows).toBe(0);
+    registry.linkUsageHistory({ attemptId: attempt.id, usageHistoryId: 1, evidenceId: randomUUID() });
+    const result = read();
+    expect(result).toMatchObject({
+      provenance: { local: { totals: { observed: "326" }, registry: {
+        totals: { observed: "163" }, counts: { measured: 1 }, bindings: { confirmed: 1 }, linkedHistoryRows: 1,
+      } } },
+      result: { remote: { incentivized: "600", gateway: null }, quality: { local: { status: "partial" } },
+        indicative: { amount: null, blockers: expect.arrayContaining([{ code: "local_coverage_partial" }]) } },
+    });
+    expect(result.provenance.local.reasons).toContain("no_remote_overlap_proof");
+    expect(result.provenance.remote.buckets[0].dataAsOf).toBeNull();
+    expect(result.provenance.local.attempts[0].usage).toMatchObject({ amount: "163", reasoningTokens: "128", cachedInputTokens: "7" });
+  });
+
+  it("keeps distinct retry and fallback identities, partial use, estimates, pending and proven unsent", () => {
+    connection();
+    connection("fixture-fallback");
+    bind();
+    bind({ connectionId: "fixture-fallback" });
+    const { start, registry, epochId } = registryFixture();
+    const initial = start();
+    dispatchRegistry(initial, midnight + 120);
+    initial.event("recordUsage", midnight + 121, { usage: { quality: "measured", source: "provider", completeness: "partial", inputTokens: "19" } });
+    initial.event("finish", midnight + 122, { state: "uncertain", outcome: "transport_error" });
+    const retry = start({ at: midnight + 123, request: initial.request, purpose: "retry", previousAttemptId: initial.id });
+    dispatchRegistry(retry, midnight + 124, "unknown");
+    retry.event("recordUsage", midnight + 125, { usage: { quality: "estimated", source: "gateway", completeness: "complete", inputTokens: "1", outputTokens: "2" } });
+    retry.event("finish", midnight + 126, { state: "uncertain", outcome: "timeout" });
+    const fallback = start({ at: midnight + 127, request: initial.request, purpose: "fallback", previousAttemptId: retry.id, connectionId: "fixture-fallback" });
+    dispatchRegistry(fallback, midnight + 128);
+    const unsent = start({ at: midnight + 129 });
+    unsent.event("finish", midnight + 130, { state: "not_sent", outcome: "internal_error", noSendEvidence: "before_transport_invocation" });
+    registry.markCoverageGap({ id: epochId, occurredAt: midnight + 131, reason: "storage_failure" });
+    const result = read();
+    expect(result.provenance.local.registry).toMatchObject({
+      counts: { partial: 1, estimated: 1, pending: 1, unknown: 1, notApplicable: 1 }, gapEpochs: 1,
+      totals: { observed: null, partialKnown: "19", estimated: "3" },
+      bindings: { configured: 2, unknown: 2 }, purposes: { primary: 2, retry: 1, fallback: 1 },
+    });
+    expect(result.provenance.local.reasons).toContain("registry_coverage_gap");
+    const attempts = result.provenance.local.attempts;
+    const [pending, retryView, first] = ["fallback", "retry", "primary"].map(purpose => attempts.find(e => e.purpose === purpose && e.state !== "not_sent"));
+    expect(pending.previousAttemptId).toBe(retryView.id);
+    expect(retryView.previousAttemptId).toBe(first.id);
+    expect(attempts.find(e => e.state === "not_sent").usage).toMatchObject({ quality: "not_applicable", amount: null, explicitZero: false });
+    expect(result.result.indicative.amount).toBeNull();
+  });
+
+  it("uses the dispatch binding across rotation and protects an unknown connection from cross-organization attribution", () => {
+    connection();
+    bind();
+    const { start } = registryFixture();
+    const assigned = start();
+    dispatchRegistry(assigned, midnight + 110, "configured");
+    assigned.event("recordUsage", midnight + 111, { usage: measuredRegistryUsage });
+    assigned.event("finish", midnight + 112, { state: "closed", outcome: "completed" });
+    const otherId = "fixture-org-beta";
+    repo.putOrganization({ ...org, id: otherId, externalId: "fixture-other" });
+    bind({ organizationId: otherId, validFrom: midnight + 120, apiKeyId: "fixture-new-key" });
+    const ambiguous = start({ at: midnight + 125 });
+    dispatchRegistry(ambiguous, midnight + 126, "unknown");
+    expect(read().provenance.local.registry).toMatchObject({ totals: { observed: "163" }, bindings: { configured: 1, unknown: 0 } });
+    expect(read({ organizationId: otherId }).provenance.local).not.toHaveProperty("registry");
+  });
+
+  it("preserves cross-midnight bounds and late revisions at the correct occurrence and knowledge horizons", () => {
+    connection();
+    bind({ validFrom: midnight - minute });
+    const { start } = registryFixture();
+    const crosses = start({ at: midnight - 20 });
+    dispatchRegistry(crosses, midnight - 10, "confirmed", midnight - minute);
+    crosses.event("finish", midnight + 5, { state: "closed", outcome: "completed" });
+    crosses.event("recordUsage", midnight + 3, { usage: measuredRegistryUsage }, midnight + 60_000);
+    crosses.event("recordUsage", midnight + 21, { usage: { ...measuredRegistryUsage, inputTokens: "20" } }, midnight + 61_000);
+    expect(read({ evaluatedAt: midnight + 2 }).provenance.local.registry).toMatchObject({
+      counts: { pending: 1, crossesWindow: 1 }, totals: { observed: null },
+    });
+    expect(read({ evaluatedAt: midnight + 10 }).provenance.local.registry).toMatchObject({
+      counts: { measured: 1, crossesWindow: 1 }, totals: { observed: "163" },
+    });
+    expect(read().provenance.local.registry).toMatchObject({ totals: { observed: "164" } });
+    expect(read({ evaluatedAt: midnight + 10, knowledgeAt: midnight + 10 }).reason).toBe("historical_state_unavailable");
+    expect(read().result.indicative.amount).toBeNull();
   });
 });

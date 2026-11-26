@@ -263,6 +263,19 @@ describe("Attempt Registry state machine", () => {
     expect(read(attemptId, { ...before, throughSequence: 0 })).toBeNull();
   });
 
+  it("bounds reconciled reads by occurrence, persisted availability and sequence independently", () => {
+    repo.prepare(makePrepare());
+    dispatch();
+    acknowledge();
+    const before = repo.captureReadCutoff();
+    clock++;
+    repo.recordUsage(update(3, 14, { occurredAt: origin, knownAt: origin, usage: measured }));
+    const after = repo.captureReadCutoff();
+    expect(repo.readAsKnownAt(attemptId, { ...after, knownAt: origin }, { evaluatedAt: origin }).usage.quality).toBe("unknown");
+    expect(repo.readAsKnownAt(attemptId, { ...before, knownAt: clock }, { evaluatedAt: origin }).usage.quality).toBe("unknown");
+    expect(repo.readAsKnownAt(attemptId, after, { evaluatedAt: origin }).usage).toMatchObject(measured);
+  });
+
   it("exposes the model and usage together at an actual reader cutoff, and retries the group idempotently", () => {
     repo.prepare(makePrepare());
     dispatch();
