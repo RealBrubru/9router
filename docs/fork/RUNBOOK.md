@@ -69,6 +69,92 @@ Provisione a organização localmente com `putOrganization` enquanto o coletor g
 
 Na homologação, `read-quota.py usage` retornou HTTP `404` porque o ID local padrão do auxiliar era diferente do ID provisionado. Liste as organizações acessíveis com `read-quota.py list` e informe o ID local com `read-quota.py usage --org <id-local>` ou `read-quota.py costs --org <id-local>`. Esse ajuste resolveu a consulta. O endpoint de snapshots espera o ID local retornado pela listagem. Se o `404` persistir, confira a autorização da sessão para a organização.
 
+### Homologação integrada do Quota Manager
+
+A imagem local `realbrubru/9router:dev-b492e205` foi construída com `git archive` e Buildx ARM64 a partir de `b492e2056eaa5958e3b9d12795d96af2d0679116`, com o rótulo OCI da revisão e sem publicação. O digest local do índice foi `sha256:e832d33c70b45b9f19a73169f6a743490bcc37e4d7358f50c0212684cb910cdf`. O runtime é Node 22.23.4, Next.js 16.4.6, better-sqlite3 12.11.1 e SQLite 3.53.2. O contexto veio do Git e os testes de conteúdo da imagem encontraram ausência de banco, arquivo de ambiente local e segredo de sessão incorporados.
+
+| Suíte offline, mesmo ambiente | Base original `5ae63d22` | Fork `b492e205` |
+| --- | ---: | ---: |
+| Arquivos coletados | 458 | 476 |
+| Passaram | 4.827 | 5.096 |
+| Falhas de caso | 49 | 49 |
+| Falhas esperadas | 14 | 14 |
+| Pulados | 14 | 16 |
+| Pendentes | 1 | 1 |
+
+A comparação por arquivo e nome encontrou as mesmas 49 falhas, todas conhecidas do baseline histórico. As duas revisões também apresentaram os mesmos três erros de suíte em `db-benchmark` por falta de `lowdb`, `embeddings.cloud` por falta do checkout Cloud e `nvidia-params` por falta de casos coletáveis. A execução usou Node ARM64 em `--network none`, código extraído por Git, dependências separadas e `DATA_DIR` temporário. Foram excluídos `translator/real/**`, `unit/mimo-free.live.test.js`, `unit/rtk.e2e.test.js` e `unit/rtk.multi-provider.e2e.test.js`. Outros casos condicionados a credenciais ou rede permaneceram desativados.
+
+A nova instância sintética usa volume próprio, rede Docker interna sem saída externa e acesso via relay limitado ao loopback. Ela inicia com `QUOTA_COLLECTOR_ENABLED=false`, `ATTEMPT_REGISTRY_OPENAI_DIRECT=false`, `MODEL_CATALOG_SYNC=off` e `ENABLE_REQUEST_LOGS=false`. O SQLite novo executou 001, 002 e 003. Em outro SQLite sintético descartável, o standalone atualizou 002 → 003, gerou backup pré-migration e preservou as linhas de uso e quota. Nos dois bancos, `integrity_check=ok` e `foreign_key_check` devolveu zero linhas.
+
+Depois de reiniciar a instância sintética, passaram novamente healthcheck, login, autorização, integridade e persistência. A API de conciliação apresentou 163 tokens no histórico e 163 no Registry como valores separados, com um vínculo persistido, 80 tokens no snapshot remoto simulado, `dataAsOf: null`, cobertura local parcial e saldo indicativo nulo. Os endpoints administrativos rejeitaram acesso anônimo e chave de inferência. A rota Chat Completions rejeitou a ausência de chave e devolveu 404 sem conexão ativa para requisições JSON e SSE autenticadas. Os respectivos fluxos de sucesso foram exercitados com transporte simulado na suíte offline.
+
+#### Próxima rodada, mediante autorização
+
+1. Use um volume limpo para separar o Analytics da rodada real e preserve o volume sintético para rollback. Na primeira inicialização real, use um nome e uma porta loopback livres, em outra rede dedicada, com um arquivo privado de ambiente que mantenha o coletor e o Registry desligados. Estas variáveis referem-se exclusivamente à nova homologação. `state` aponta para o diretório privado com `tools/provision.mjs`, `env_file` para o arquivo de ambiente da rodada real e `port` para uma porta loopback livre.
+
+   ```bash
+   docker network create "$real_network"
+   docker volume create "$real_data_volume"
+   docker run -d --name "$container" --network "$real_network" \
+     --publish "127.0.0.1:$port:20128" --env-file "$env_file" \
+     --mount "type=volume,src=$real_data_volume,dst=/app/data" \
+     --mount "type=bind,src=$state/tools,dst=/fixture,readonly" \
+     --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 "$image"
+   base="http://127.0.0.1:$port"
+   curl -fsS "$base/api/health"
+   ```
+
+   Cadastre a conexão OpenAI no Dashboard. No diretório privado, prepare `organization.json` com `organization` aceito por `putOrganization` e `bindings` com `connectionId`, `apiKeyId`, `projectId` opcional e `validFrom` em ms UTC. Use os modelos e limites verificados pelo proprietário, com `minuteEnabled: false` e só a referência opaca da Admin Key. Execute o auxílio local `provision.mjs` enquanto o coletor global está desligado.
+
+   ```sh
+   docker exec --user node -i "$container" node /fixture/provision.mjs < "$state/organization.json"
+   ```
+
+2. Instale a Admin Key restrita em um volume próprio, fora do SQLite e da imagem. Este exemplo recebe o segredo sem pô-lo nos argumentos do processo. Use um volume novo e acessível apenas ao runtime da homologação. Mantenha a API key de inferência separada e cadastre-a pelo Dashboard.
+
+   ```bash
+   docker volume create "$quota_secrets_volume"
+   read -rsp 'Admin Key restrita: ' admin_key; printf '\n'
+   printf '%s\n' "$admin_key" | docker run --rm --network none -i \
+     --mount "type=volume,src=$quota_secrets_volume,dst=/secrets" \
+     --entrypoint sh "$image" -ceu '
+       umask 077
+       cat > /secrets/openai-homolog
+       chown node:node /secrets /secrets/openai-homolog
+       chmod 700 /secrets
+       chmod 400 /secrets/openai-homolog
+     '
+   unset admin_key
+   ```
+
+   Use `credentialRef: "ref:openai-homolog"`. No arquivo privado de ambiente, defina `QUOTA_COLLECTOR_SECRETS_DIR=/run/quota`, `QUOTA_COLLECTOR_SECRET_REFS=ref:openai-homolog`, `QUOTA_COLLECTOR_ENABLED=true`, `ATTEMPT_REGISTRY_OPENAI_DIRECT=true` e mantenha catálogo e conteúdo desativados. Recrie somente a homologação destinada à rodada real com o mesmo comando e volume de dados, acrescentando `--mount "type=volume,src=$quota_secrets_volume,dst=/run/quota,readonly"` antes da imagem. Permita saída à OpenAI na rede dedicada dessa rodada. Preserve as instalações anteriores e a homologação sintética. [Provisionamento do Collector](#operação-da-homologação-do-quota-collector)
+
+3. Aguarde uma coleta com o Dashboard fechado. Consulte o estado da organização e confirme que o Registry está restrito ao piloto direto. Depois da autorização explícita, execute uma requisição JSON e uma SSE de baixo custo. Passe o cabeçalho com chave local pelo stdin do `curl`, usando um prompt sintético e modelo verificado no Dashboard.
+
+   ```bash
+   read -rsp 'API key da homologação: ' gateway_key; printf '\n'
+   for stream in false true; do
+     jq -n --arg model "$model" --argjson stream "$stream" '
+       {model:$model, messages:[{role:"user",content:"Responda apenas OK"}],
+        stream:$stream, max_completion_tokens:128}
+       + if $stream then {stream_options:{include_usage:true}} else {} end
+     ' > "$state/request.json"
+     printf 'header = "Authorization: Bearer %s"\n' "$gateway_key" | \
+       curl --config - -fsS -N -H 'Content-Type: application/json' \
+         --data-binary "@$state/request.json" "$base/v1/chat/completions"
+   done
+   unset gateway_key
+   ```
+
+4. Com o cookie privado de uma sessão administrativa, compare as leituras locais e a Usage API para a mesma janela e chave. Consulte Costs separadamente. Distinga ausência de lançamento, zero explícito e faturamento confirmado. Compare eventos do Registry com o Analytics, confira `dataAsOf` e interprete eventual saldo indicativo pelas hipóteses e lacunas retornadas. Consumo local e remoto sobrepostos exigem evidência independente, e o teste controlado deixa a cobertura geral em aberto.
+
+   ```sh
+   scope="$base/api/quota/organizations/$org"
+   curl -fsS -b "$cookiejar" "$scope/snapshots?source=usage"
+   curl -fsS -b "$cookiejar" "$scope/snapshots?source=costs"
+   curl -fsS -b "$cookiejar" "$scope/groups/$group/reconciliation"
+   ```
+
 ### Observability e aba Details
 
 Quando `ENABLE_REQUEST_LOGS` está definida, somente o valor `true`, sem distinção de maiúsculas, habilita Details. Isso tem precedência sobre `enableObservability` no Dashboard. Sem a variável, o valor booleano do Dashboard prevalece. `OBSERVABILITY_ENABLED` é o fallback quando a configuração da interface não fornece um booleano. Para devolver o controle ao Dashboard, remova `ENABLE_REQUEST_LOGS` do ambiente do container e recrie somente a instância autorizada. [Precedência no repositório de detalhes](../../src/lib/db/repos/requestDetailsRepo.js#L13)
