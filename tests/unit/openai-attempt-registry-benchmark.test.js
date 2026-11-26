@@ -28,7 +28,8 @@ const sseChunk = value => encoder.encode(`data: ${JSON.stringify(value)}\n\n`);
 const retireFlag = "ATTEMPT_REGISTRY_OPENAI_DIRECT";
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const round = value => Number(value.toFixed(3));
-const profile = process.env.RUN_ATTEMPT_PROFILE === "1";
+const compare = process.env.RUN_ATTEMPT_PROFILE_COMPARE === "1";
+const profile = compare || process.env.RUN_ATTEMPT_PROFILE === "1";
 
 function percentiles(samples) {
   if (!samples.length) return null;
@@ -107,9 +108,10 @@ async function fileBytes(file) {
   return (await stat(file).catch(error => { if (error.code !== "ENOENT") throw error; }))?.size ?? 0;
 }
 
-async function runCell({ post, updateSettings, disablePilot, root, stream, enabled, concurrency, warnings }) {
-  const file = join(root, `${stream}-${enabled}-${concurrency}.sqlite`);
+async function runCell({ post, updateSettings, disablePilot, root, stream, enabled, concurrency, warnings, mode }) {
+  const file = join(root, `${stream}-${enabled}-${concurrency}-${mode}.sqlite`);
   const db = createBetterSqliteAdapter(file);
+  if (mode === "readback") db.supportsInsertReturning = false;
   const profiler = profile ? createAttemptProfiler(db) : null;
   fixture.profiler = profiler;
   const sql = { transactions: [], registryStatements: [], errors: 0, busy: 0 };
@@ -215,7 +217,7 @@ async function runCell({ post, updateSettings, disablePilot, root, stream, enabl
       profiler.phase("idle");
     }
     return {
-      protocol: stream ? "SSE" : "JSON", enabled, concurrency, rounds, batches, samples: samples.length,
+      protocol: stream ? "SSE" : "JSON", enabled, mode, concurrency, rounds, batches, samples: samples.length,
       preDispatch: percentiles(samples.map(sample => sample.preDispatch)),
       launchDelay: percentiles(samples.map(sample => sample.launchDelay)),
       firstToken: stream ? percentiles(samples.map(sample => sample.firstToken)) : null,
@@ -255,8 +257,17 @@ it.runIf(profile || process.env.RUN_ATTEMPT_BENCH === "1")("compares OpenAI dire
     for (const stream of [false, true]) {
       const levels = profile ? [1, 100] : [1, 10, 50, 100];
       for (const [index, concurrency] of levels.entries()) {
+        if (compare) {
+          const reverse = (index + Number(stream) + Number(process.env.ATTEMPT_COMPARE_REVERSE === "1")) % 2;
+          const modes = reverse ? ["returning", "readback"] : ["readback", "returning"];
+          for (const mode of modes) {
+            const result = await runCell({ post, updateSettings, disablePilot, root, stream, enabled: true, concurrency, warnings, mode });
+            log.call(console, "ATTEMPT_BENCH", JSON.stringify(result));
+          }
+          continue;
+        }
         for (const enabled of index % 2 ? [true, false] : [false, true]) {
-          const result = await runCell({ post, updateSettings, disablePilot, root, stream, enabled, concurrency, warnings });
+          const result = await runCell({ post, updateSettings, disablePilot, root, stream, enabled, concurrency, warnings, mode: "current" });
           log.call(console, "ATTEMPT_BENCH", JSON.stringify(result));
         }
       }

@@ -57,6 +57,12 @@ Com prova válida, a recuperação fecha épocas abertas, encerra tentativas abe
 
 Os testes verificam transações e reabertura. A durabilidade diante de queda de energia ou falha do host depende do driver, configuração e armazenamento e ainda precisa ser avaliada. A recuperação deve respeitar as garantias efetivamente confirmadas.
 
+### Retorno da linha inserida
+
+O repositório lê a linha de evento diretamente da inserção com `INSERT … RETURNING *` quando o adaptador declara suporte. `better-sqlite3` e `node:sqlite` usam esse caminho pela mesma interface de parâmetros e cache de statements. O SQLite fornece `sequence`, versão, timestamps e demais colunas. A mesma função decodifica a linha nos dois caminhos. A busca de um evento preexistente para idempotência e as verificações de versão e transição continuam na mesma transação.
+
+`sql.js`, Bun e adaptadores sem suporte declarado usam inserção seguida de leitura. A exportação diferida e a restrição de certificar barreira em `sql.js` permanecem. Na primeira inserção de um repositório, a presença de triggers em `inferenceAttemptEvents` também seleciona a leitura posterior. Com SQLite, alterações de um trigger `AFTER INSERT` podem aparecer apenas nessa leitura. A decisão vale para a vida do repositório e pressupõe schema estável após a inicialização. Mudanças de DDL externas durante a execução exigem reabrir o repositório. [Implementação](../../src/lib/db/repos/attemptRegistryRepo.js) · [Comparação](ATTEMPT-REGISTRY-PROFILING.md#comparação-da-releitura-com-returning)
+
 ## Piloto OpenAI direto
 
 `ATTEMPT_REGISTRY_OPENAI_DIRECT=true` habilita o piloto. O padrão é desligado. Somente `POST /v1/chat/completions`, servido por `/api/v1/chat/completions`, cria o contexto no ingresso. O escopo exige seleção de modelo único, conexão OpenAI por API key, formatos Chat Completions nos dois lados e transporte Undici direto à URL oficial. A cadeia compartilha o `requestId` e cada tentativa recebe seu `attemptId`. Em cada envio, o piloto lê o modelo do corpo preparado e resolve o vínculo vigente da conexão. O vínculo fica `configured` quando a API key selecionada corresponde à autorização efetiva e o vínculo é único, ou `unknown` quando há ambiguidade, ausência ou sobrescrita de escopo. Os headers recebidos registram resposta observada com aceite `unknown`. [Rota](../../src/app/api/v1/chat/completions/route.js) · [Piloto](../../src/lib/quota/openAiDirectAttemptPilot.js) · [Fronteira HTTP](../../open-sse/utils/proxyFetch.js)

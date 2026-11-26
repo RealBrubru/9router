@@ -11,10 +11,10 @@ let calls = 0;
 let lastKind;
 const storage = {
   ...db,
-  run(sql, params) {
+  ...Object.fromEntries(["get", "run"].map(method => [method, (sql, params) => {
     if (sql.startsWith("INSERT INTO inferenceAttemptEvents")) lastKind = params[3];
-    return db.run(sql, params);
-  },
+    return db[method](sql, params);
+  }])),
   transaction(action) {
     lastKind = null;
     const result = db.transaction(action);

@@ -67,3 +67,40 @@ Os picos de RSS a 100 simultâneas oscilaram entre 232 e 331 MiB. As combinaçõ
 | **5. Worker dedicado à escrita** | Pode tirar SQLite síncrono do event loop e explicitar filas e backpressure. O volume de commits continuará relevante. | Alta complexidade. IPC, ordenação, crash do worker, contenção com Analytics e confirmação da barreira viram parte do contrato. A tentativa só pode seguir pelo caminho normal de despacho depois de resposta sobre a gravação, respeitando a política Observation em falhas. Evitar trabalhos reordenados ou órfãos e medir fila e perda de cobertura. |
 
 O próximo incremento recomendado começa pela remoção de leituras redundantes com testes de equivalência e mede de novo a rota antes de agrupar transações. O agrupamento segue como o candidato de maior impacto potencial, condicionado à preservação das evidências nos testes de crash. O profiling não alterou o fluxo de produção nem as garantias de durabilidade. Recuperação automática em servidor, durabilidade física, memória incremental e cobertura dos transportes opacos seguem abertas.
+
+## Comparação da releitura com RETURNING
+
+A 7.1.2c3c++ altera somente o retorno da inserção do evento. O benchmark mantém o Registry ligado e seleciona a releitura anterior ou `INSERT … RETURNING` pelo capability do adaptador no harness. Assim os dois modos usam o mesmo código restante, driver, fixture, instrumentação e configurações de durabilidade.
+
+A partir de `tests/`, repita o comando abaixo com `ATTEMPT_COMPARE_REVERSE=0` e `ATTEMPT_COMPARE_REVERSE=1`. Cada execução usa um processo novo e alterna a ordem dos modos por cenário. Há três rodadas por combinação após aquecimento, com 360 amostras a uma requisição simultânea e 600 a cem requisições simultâneas. O harness mantém uma base temporária por combinação.
+
+```bash
+env -u RUN_REAL -u RUN_E2E RUN_ATTEMPT_PROFILE_COMPARE=1 ATTEMPT_COMPARE_REVERSE=0 \
+  node node_modules/vitest/vitest.mjs run --maxWorkers=1 unit/openai-attempt-registry-benchmark.test.js
+```
+
+As contagens abaixo incluem somente o caminho quente das transações do Registry. As transações por requisição incluem também o Analytics. A inspeção de triggers é feita no primeiro evento do repositório e fica fora da janela aquecida. A fase de cobertura, que inclui a abertura e o encerramento da época, é medida separadamente.
+
+| Protocolo | Statements do Registry por requisição, releitura → RETURNING | Transações totais por requisição, ambos os caminhos |
+| --- | ---: | ---: |
+| JSON | 46 → 40 | 7 |
+| SSE | 54 → 47 | 8 |
+
+Cada célula compara releitura → RETURNING. A média acumulada de SQL e transações abrange o Registry. O p95 de pré-despacho, total e TTFT está em ms. O atraso do loop é a maior espera por um `setImmediate` agendado no início de cada rajada.
+
+| Execução | Protocolo | Simultâneas | SQL (ms) | Transações (ms) | Pré-despacho p95 | Total p95 | TTFT p95 | Req/s | Atraso máximo do loop (ms) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | JSON | 1 | 0,743 → 0,795 | 3,021 → 3,125 | 2,7 → 2,6 | 27,4 → 27,2 | — | 168,3 → 166,1 | 36,6 → 34,9 |
+| 1 | JSON | 100 | 0,774 → 0,809 | 3,221 → 3,031 | 576,5 → 583,6 | 594,0 → 602,5 | — | 163,1 → 160,6 | 664,5 → 650,3 |
+| 1 | SSE | 1 | 0,911 → 0,967 | 3,667 → 3,525 | 2,9 → 2,8 | 29,7 → 29,1 | 6,3 → 6,6 | 118,2 → 114,5 | 54,4 → 27,5 |
+| 1 | SSE | 100 | 0,988 → 1,031 | 3,884 → 3,717 | 368,8 → 345,9 | 840,2 → 796,7 | 512,7 → 445,8 | 118,7 → 123,5 | 457,5 → 395,3 |
+| 2 | JSON | 1 | 0,719 → 0,747 | 2,858 → 3,114 | 2,5 → 2,5 | 25,8 → 26,6 | — | 179,6 → 167,4 | 36,9 → 36,6 |
+| 2 | JSON | 100 | 0,733 → 0,749 | 3,019 → 2,904 | 577,2 → 553,5 | 593,6 → 573,7 | — | 162,8 → 170,6 | 661,6 → 622,3 |
+| 2 | SSE | 1 | 0,879 → 0,950 | 3,524 → 3,540 | 2,8 → 2,9 | 29,9 → 30,3 | 6,0 → 11,6 | 116,8 → 116,2 | 28,0 → 31,8 |
+| 2 | SSE | 100 | 0,958 → 1,010 | 3,739 → 3,736 | 346,0 → 360,9 | 798,1 → 808,1 | 452,1 → 478,5 | 123,9 → 121,5 | 404,2 → 409,6 |
+
+Nas duas execuções, as 7.680 tentativas esperadas foram persistidas, com uma linha de Analytics por requisição e zero falhas de persistência, avisos de Registry ou `SQLITE_BUSY`. A contagem por requisição conserva as consultas de identidade preexistente e inclui as mesmas escritas de estado e evento. Das chamadas dentro da transação, as leituras caíram de 33 para 27 em JSON e de 39 para 32 em SSE. A busca de vínculo candidato fora da transação permaneceu nos dois modos.
+
+A redução de releituras foi reproduzida em todos os cenários. O tempo acumulado dos statements subiu entre 0,016 e 0,071 ms por requisição, apesar de haver menos chamadas. O p95 total e o throughput variaram em direções diferentes entre as duas execuções, especialmente a 100 simultâneas. A evidência confirma a redução estrutural de consultas, com ganho operacional inconclusivo. O benchmark não isolou o custo interno do `RETURNING` nem demonstra uma regressão generalizável em produção.
+
+O próximo incremento permanece a avaliação do agrupamento de transações semanticamente compatíveis. Usar a mesma comparação controlada e repetir os testes de crash antes de alterar a separação entre evidências e desfecho. Escrita seletiva, índices, worker dedicado, memória, contenção e retenção continuam no backlog.
