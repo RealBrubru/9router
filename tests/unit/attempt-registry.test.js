@@ -263,6 +263,54 @@ describe("Attempt Registry state machine", () => {
     expect(read(attemptId, { ...before, throughSequence: 0 })).toBeNull();
   });
 
+  it("exposes the model and usage together at an actual reader cutoff, and retries the group idempotently", () => {
+    repo.prepare(makePrepare());
+    dispatch();
+    acknowledge();
+    const command = update(3, 14, { returnedModel: "fixture-returned", usageEventId: id(15), usage: measured });
+    const second = createBetterSqliteAdapter(file);
+    try {
+      second.exec("PRAGMA busy_timeout = 0");
+      const other = repository(second);
+      const before = other.captureReadCutoff();
+      let committed;
+      db.transaction(() => {
+        committed = repo.recordModelAndUsage(command);
+        expect(other.captureReadCutoff()).toEqual(before);
+        expect(() => other.recordModelAndUsage(command)).toThrow(/locked|busy/i);
+      });
+      expect(other.recordModelAndUsage(command)).toEqual(committed);
+      expect(other.captureReadCutoff().throughSequence).toBe(before.throughSequence + 2);
+      expect(read(attemptId, before)).toMatchObject({ returnedModel: null, usage: { quality: "unknown" } });
+      const after = read();
+      expect(after.events.slice(-2)).toMatchObject([
+        { kind: "returned_model", version: 4, eventId: command.eventId },
+        { kind: "usage", version: 5, eventId: command.usageEventId },
+      ]);
+      expect(after).toMatchObject({ returnedModel: "fixture-returned", usage: measured });
+      expect(() => other.recordModelAndUsage({ ...command, usage: { ...measured, outputTokens: "1" } })).toThrow("identity_conflict");
+      expect(() => other.recordModelAndUsage({ ...command, eventId: id(31), usageEventId: id(32) })).toThrow("version_conflict");
+      expect(read()).toEqual(after);
+    } finally { second.close(); }
+  });
+
+  it("rolls back the model and materialized version if inserting grouped usage fails", () => {
+    repo.prepare(makePrepare());
+    dispatch();
+    acknowledge();
+    const before = read();
+    const command = update(3, 14, { returnedModel: "fixture-returned", usageEventId: id(15), usage: measured });
+    db.exec(`CREATE TRIGGER fixture_fail_group BEFORE INSERT ON inferenceAttemptEvents
+      WHEN NEW.kind = 'usage' BEGIN SELECT RAISE(ABORT, 'fixture group failure'); END`);
+    expect(() => repo.recordModelAndUsage(command)).toThrow("fixture group failure");
+    expect(read()).toEqual(before);
+    db.exec("DROP TRIGGER fixture_fail_group");
+    expect(repo.recordModelAndUsage(command).version).toBe(5);
+    repo.finish(update(5, 16, { state: "closed", outcome: "completed" }));
+    expect(repo.recordModelAndUsage(command).version).toBe(5);
+    expect(read().attempt.version).toBe(6);
+  });
+
   it("captures the binding selected at dispatch, including a later rotation", () => {
     db.exec(`INSERT INTO providerConnections(id,provider,authType,data,createdAt,updatedAt)
       VALUES ('fixture-connection','openai','apikey','{}','fixture','fixture')`);

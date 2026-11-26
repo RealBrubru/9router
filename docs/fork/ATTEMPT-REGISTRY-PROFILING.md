@@ -103,4 +103,21 @@ Nas duas execuções, as 7.680 tentativas esperadas foram persistidas, com uma l
 
 A redução de releituras foi reproduzida em todos os cenários. O tempo acumulado dos statements subiu entre 0,016 e 0,071 ms por requisição, apesar de haver menos chamadas. O p95 total e o throughput variaram em direções diferentes entre as duas execuções, especialmente a 100 simultâneas. A evidência confirma a redução estrutural de consultas, com ganho operacional inconclusivo. O benchmark não isolou o custo interno do `RETURNING` nem demonstra uma regressão generalizável em produção.
 
-O próximo incremento permanece a avaliação do agrupamento de transações semanticamente compatíveis. Usar a mesma comparação controlada e repetir os testes de crash antes de alterar a separação entre evidências e desfecho. Escrita seletiva, índices, worker dedicado, memória, contenção e retenção continuam no backlog.
+A comparação seguinte avalia o agrupamento de transações semanticamente compatíveis e repete os testes de crash. Escrita seletiva, índices, worker dedicado, memória, contenção e retenção continuam no backlog.
+
+## Comparação do agrupamento semântico
+
+O segundo incremento agrupa `returned_model` e `usage` somente quando o piloto já tem as duas observações na finalização. O evento de desfecho continua em outra transação. A preparação e a barreira ficam separadas porque há processamento local que pode falhar entre elas. A resposta observada e o modelo também ficam separados porque os headers chegam antes do corpo. [Fronteiras e visibilidade](ATTEMPT-REGISTRY.md#visibilidade-do-modelo-e-do-uso)
+
+Os testes compararam as quatro configurações com transporte simulado, em um processo Node ARM64 e com um SQLite temporário próprio por combinação. Foram **14.160 requisições** em 32 combinações, cada uma com três rodadas após aquecimento. As ordens `ABDC`, `BCAD`, `CDBA` e `DACB` alternaram por protocolo e nível. O harness desabilita os caminhos experimentais por injeção de teste. Em A e B, modelo e uso percorrem as duas operações originais do repositório no mesmo fluxo sintético. Esse controle mantém o restante da rota constante. A e C usam releitura. A execução histórica usou a capacidade experimental do adaptador. A reprodução atual de B e D emula o caminho `RETURNING` no adaptador exclusivo do benchmark com schema sem triggers. WAL e `synchronous=NORMAL` foram preservados.
+
+| Configuração | JSON / SSE — statements do Registry por requisição | JSON / SSE — transações totais por requisição |
+| --- | ---: | ---: |
+| A — releitura e transações separadas | 46 / 54 | 7 / 8 |
+| B — `RETURNING` e transações separadas | 40 / 47 | 7 / 8 |
+| C — releitura e agrupamento | 46 / 54 | 6 / 7 |
+| D — `RETURNING` e agrupamento | 40 / 47 | 6 / 7 |
+
+A 100 simultâneas, C reduziu o p95 total frente a A de **554,2 para 525,5 ms em JSON** e de **798,4 para 756,3 ms em SSE**. Nessas duas comparações, o p95 de cada uma das três rodadas de C ficou abaixo do menor p95 de A. O efeito em baixa concorrência foi menor e sujeito a variação, com p95 SSE praticamente estável a uma simultânea. Também houve variação entre C e D. No SSE a 100, C teve p95 e throughput melhores que D nesta execução. Os resultados delimitam uma vantagem local sob carga sintética, com ambiente e amostra limitados.
+
+A configuração escolhida para a primeira versão é **C**. O agrupamento reduz commits e preserva o corte de recuperação em que uso já foi gravado e o desfecho ainda está pendente. A releitura mantém o caminho uniforme entre drivers. `RETURNING` não demonstrou benefício operacional adicional consistente e exige uma decisão sobre compatibilidade de triggers. O checkpoint experimental foi preservado em `4a414947`. O harness mantém `RETURNING` restrito às fixtures de benchmark. [Todas as combinações e rodadas](ATTEMPT-REGISTRY-TRANSACTION-BENCHMARK.md)

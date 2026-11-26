@@ -17,6 +17,12 @@ Os princípios preliminares são **Privacy by default**, **Cost awareness**, **S
 
 A direção de produto combina gateway e roteamento inteligente, políticas de acesso, quotas, orçamentos e FinOps, descoberta de modelos, tarifas, gratuidades e descontos, e observabilidade granular. Branding técnico, infraestrutura e distribuição próprias seguem no backlog estratégico. [Backlog estratégico](ROADMAP.md#backlog-estratégico-do-projeto-independente)
 
+### Foco da primeira versão
+
+O PipoRouter deve ajudar usuários a conhecer, controlar e aproveitar seus recursos de IA de maneira simples. Adotamos simplicidade por design e sofisticação quando necessária. A primeira versão prioriza as funções úteis e comprováveis, com segurança, integridade dos dados, privacidade e controle financeiro como requisitos essenciais. A experiência de uso abstrai a complexidade interna.
+
+Otimizações sem benefício demonstrado e melhorias de escala ficam no backlog. Worker dedicado, novas otimizações SQLite, revisão de índices e PostgreSQL só ganham prioridade quando houver necessidade medida.
+
 O saldo indicativo de franquia informa o operador com a janela, as hipóteses e as lacunas que sustentam o cálculo. A API administrativa disponibiliza a visão diagnóstica por organização e grupo. A autorização de consumo terá política própria, decisão por tentativa e reserva atômica. [Contrato da API de conciliação](QUOTA-RECONCILIATION.md#api-administrativa-de-conciliação)
 
 O Attempt Registry preserva identidade, causalidade, estados e evidências de consumo em metadados operacionais independentes do conteúdo das conversas. O piloto OpenAI direto usa Observation, fica desativado por padrão e registra reenvios observáveis. A recuperação foi validada com prova de saída da instância e a cobertura permanece indeterminada para caminhos opacos e períodos sem observação. A integração com a conciliação tem etapa própria. [Attempt Registry](ATTEMPT-REGISTRY.md)

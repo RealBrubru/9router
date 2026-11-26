@@ -11,11 +11,15 @@
 - **Conciliação passiva.** O saldo indicativo preserva a janela, as hipóteses e a qualidade das informações. A futura autorização de envio exige decisão própria por tentativa, organização, política e janela, vinculada à reserva atômica. [Contrato de conciliação](QUOTA-RECONCILIATION.md)
 - **Attempt Registry.** Propagar contexto explícito e registrar na fronteira semântica do envio. Recuperar somente com evidência de que a instância encerrou. O piloto usa Observation e fica desativado por padrão. Required e a retenção configurável seguem no backlog. [Persistência e recuperação](ATTEMPT-REGISTRY.md)
 
+- **Simplicidade por design.** Preferir a solução mais simples que satisfaça requisitos demonstráveis. Priorizar uma primeira versão útil com segurança, integridade, privacidade e controle financeiro. Abstrair a complexidade interna da experiência do usuário e adiar melhorias não essenciais até haver benefício demonstrado. [Foco da primeira versão](PROJECT.md#foco-da-primeira-versão)
+- **Persistência do Attempt Registry.** Adotar a configuração C, com releitura comum a todos os drivers, commit conjunto do modelo e uso e commit separado do desfecho. Manter o experimento `RETURNING` no histórico. [Comparação](ATTEMPT-REGISTRY-PROFILING.md#comparação-do-agrupamento-semântico)
+
 ## Fluxo proposto para sincronização
 
 Com a árvore limpa, atualizar as referências de `upstream`, revisar o que mudou desde a última integração e integrar em uma branch `sync/upstream-*` a partir de `master`. Executar regressões e revisar conflitos antes do merge em `master`. Preservar o histórico já publicado. Conferir o impacto das tags no [workflow Docker](../../.github/workflows/docker-publish.yml) antes da primeira release.
 
 ## Propostas para revisão
+
 
 | Tema | Proposta |
 | --- | --- |

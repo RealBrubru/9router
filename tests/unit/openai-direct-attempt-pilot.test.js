@@ -419,6 +419,22 @@ describe("OpenAI direct attempt pilot through the Chat Completions route", () =>
     } finally { db.exec("DROP TRIGGER fixture_middle_failure"); }
   }));
 
+  it("preserves JSON and Analytics when the grouped evidence rolls back in Observation mode", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(silence);
+    db.exec(`CREATE TRIGGER fixture_fail_group BEFORE INSERT ON inferenceAttemptEvents
+      WHEN NEW.kind = 'usage' BEGIN SELECT RAISE(ABORT, 'fixture-private-storage-error'); END`);
+    try {
+      upstream.mockReturnValueOnce(jsonReply());
+      expect(await (await request()).json()).toMatchObject({ ...json, usage });
+      const [attempt] = assertChain([undefined]);
+      expect(attempt).toMatchObject({ attempt: { state: "response_observed" }, returnedModel: null, usage: { quality: "unknown" } });
+      expect(attempt.events.map(event => event.kind)).toEqual(["prepare", "dispatch", "acknowledge"]);
+      expect(repo.readCoverage(attempt.attempt.epochId)).toMatchObject({ coverage: "gap", gapReason: "storage_failure" });
+      expect(JSON.stringify(warning.mock.calls)).not.toContain("fixture-private-storage-error");
+      await history(1);
+    } finally { db.exec("DROP TRIGGER fixture_fail_group"); }
+  });
+
   it("leaves consumption unknown when Undici reports an opaque redirect", async () => {
     const response = jsonReply();
     Object.defineProperty(response, "redirected", { value: true });

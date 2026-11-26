@@ -32,16 +32,9 @@ async function withDatabase(open, action) {
   }
 }
 
-function exercise(db, supportsInsertReturning) {
+function exercise(db, grouped) {
   let clock = 10;
-  const operations = [];
-  const adapter = { ...db, supportsInsertReturning,
-    get(sql, params) {
-      if (sql.includes("inferenceAttemptEvents")) operations.push(sql.trim().split(/\s+/)[0]);
-      return db.get(sql, params);
-    },
-  };
-  const repo = createAttemptRegistryRepository(adapter, { now: () => clock });
+  const repo = createAttemptRegistryRepository(db, { now: () => clock });
   repo.openEpoch(epoch);
   const prepared = repo.prepare(preparation);
   const dispatch = { attemptId: id(4), eventId: id(6), expectedVersion: 1, occurredAt: 3, knownAt: 4,
@@ -65,32 +58,36 @@ function exercise(db, supportsInsertReturning) {
   const terminal = repo.finish(finish);
   const beforeEvidence = repo.captureReadCutoff();
   clock = 12;
-  const evidence = repo.recordUsage({ attemptId: id(4), eventId: id(9), expectedVersion: 4, occurredAt: 6, knownAt: 11,
-    usage: { quality: "measured", source: "provider", completeness: "complete", inputTokens: "12", outputTokens: "5" } });
+  const common = { attemptId: id(4), expectedVersion: 4, occurredAt: 6, knownAt: 11 };
+  const usage = { quality: "measured", source: "provider", completeness: "complete", inputTokens: "12", outputTokens: "5" };
+  const returnedModel = "fixture-returned";
+  let evidence;
+  if (grouped) {
+    evidence = repo.recordModelAndUsage({ ...common, eventId: id(9), usageEventId: id(10), returnedModel, usage });
+  } else {
+    const model = repo.observeReturnedModel({ ...common, eventId: id(9), returnedModel });
+    evidence = repo.recordUsage({ ...common, expectedVersion: model.version, eventId: id(10), usage });
+  }
   const prior = repo.readAsKnownAt(id(4), beforeEvidence);
   const current = repo.readAsKnownAt(id(4), repo.captureReadCutoff());
-  expect(current.events).toEqual([prepared, dispatched, acknowledged, terminal, evidence]);
-  expect(current.events.map(event => event.sequence)).toEqual([1, 2, 3, 4, 5]);
+  expect(current.events.slice(0, 4)).toEqual([prepared, dispatched, acknowledged, terminal]);
+  expect(current.events[4]).toMatchObject({ kind: "returned_model", eventId: id(9) });
+  expect(current.events[5]).toEqual(evidence);
+  expect(current.events.map(event => event.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
   expect(evidence).toMatchObject({ occurredAt: 6, knownAt: 11, recordedAt: 12 });
   expect(prior.usage.quality).toBe("unknown");
   expect(current.usage.outputTokens).toBe("5");
-  return { prior, current, insertsWithReturn: operations.filter(operation => operation === "INSERT").length };
+  return { prior, current };
 }
 
 it.each([
-  ["better-sqlite3", createBetterSqliteAdapter, true],
-  ["node:sqlite", createNodeSqliteAdapter, true],
-  ["sql.js", createSqlJsAdapter, false],
-])("returns the persisted shape and preserves the timeline on %s", async (_label, open, nativeReturning) => {
-  const optimized = await withDatabase(open, db => {
-    expect(Boolean(db.supportsInsertReturning)).toBe(nativeReturning);
-    return exercise(db, db.supportsInsertReturning);
-  });
-  const legacy = await withDatabase(open, db => exercise(db, false));
-  expect(optimized.insertsWithReturn).toBe(nativeReturning ? 6 : 0);
-  expect(legacy.insertsWithReturn).toBe(0);
-  expect(optimized.prior).toEqual(legacy.prior);
-  expect(optimized.current).toEqual(legacy.current);
+  ["better-sqlite3", createBetterSqliteAdapter],
+  ["node:sqlite", createNodeSqliteAdapter],
+  ["sql.js", createSqlJsAdapter],
+])("returns the same persisted timeline with grouped and separate writes on %s", async (_label, open) => {
+  const grouped = await withDatabase(open, db => exercise(db, true));
+  const separate = await withDatabase(open, db => exercise(db, false));
+  expect(grouped).toEqual(separate);
 });
 
 it("uses readback if a custom trigger can change the final stored event", async () => {

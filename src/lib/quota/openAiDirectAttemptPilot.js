@@ -43,10 +43,16 @@ function attemptObserver({ write, now, db, connectionId, sentModel, onResponse, 
     if (finished) return;
     finished = true;
     buffer = "";
-    if (model) write("observeReturnedModel", { returnedModel: model });
-    if (usage) write("recordUsage", {
+    const usageDetails = usage && {
       usage: { ...usage, quality: "measured", source: "provider", completeness: completeUsage ? "complete" : "partial" },
+    };
+    // Both observations are ready here. Commit the evidence before the separate
+    // outcome so recovery can still retain measured usage after a crash.
+    if (model && usageDetails) write("recordModelAndUsage", {
+      returnedModel: model, usageEventId: randomUUID(), ...usageDetails,
     });
+    else if (model) write("observeReturnedModel", { returnedModel: model });
+    else if (usageDetails) write("recordUsage", usageDetails);
     write("finish", {
       state, outcome, ...(state === "not_sent" ? { noSendEvidence: "before_transport_invocation" } : {}),
     });
@@ -215,7 +221,7 @@ export function createOpenAiDirectAttemptPilot({ openDb = () => getAdapterSync()
       if (current?.db !== db) {
         epoch = { db, id: randomUUID(), repo: createAttemptRegistryRepository(db, { now }) };
         epoch.repo.openEpoch({
-          id: epoch.id, instanceId, instrumentationVersion: "openai-direct-v2", route: ROUTE, operation: "chat",
+          id: epoch.id, instanceId, instrumentationVersion: "openai-direct-v3", route: ROUTE, operation: "chat",
           transport: "http", barrierCertified: false, openedAt: now(),
         });
         current = epoch;

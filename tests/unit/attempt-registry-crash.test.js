@@ -221,6 +221,8 @@ describe("OpenAI direct pilot crash recovery with an observed child exit", () =>
     const { attemptId } = worker.identity;
     const before = repo.readAsKnownAt(attemptId, repo.captureReadCutoff());
     expect(before.attempt.state).toBe("in_progress");
+    expect(before.returnedModel).toBe("fixture-model");
+    expect(before.events.slice(-2).map(event => event.kind)).toEqual(["returned_model", "usage"]);
     expect(before.usage).toMatchObject({ quality: "measured", completeness: "complete", inputTokens: "11", outputTokens: "7" });
     await recover(repo, worker);
     const after = repo.readAsKnownAt(attemptId, repo.captureReadCutoff());

@@ -66,7 +66,6 @@ export function createAttemptRegistryRepository(db, { now = Date.now, verifyInac
   const getAttempt = id => db.get("SELECT * FROM inferenceAttempts WHERE id = ?", [id]);
   const getRequest = id => db.get("SELECT * FROM inferenceRequests WHERE id = ?", [id]);
   const getEvent = (id, eventId) => db.get("SELECT * FROM inferenceAttemptEvents WHERE attemptId = ? AND eventId = ?", [id, eventId]);
-  let canReturnEvent;
 
   function openEpoch(input) {
     fields(input, ["id", "instanceId", "instrumentationVersion", "route", "operation", "transport", "barrierCertified", "openedAt"]);
@@ -131,17 +130,6 @@ export function createAttemptRegistryRepository(db, { now = Date.now, verifyInac
     const insert = `INSERT INTO inferenceAttemptEvents(attemptId, eventId, version, kind, state, outcome, occurredAt, knownAt, recordedAt, details)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     const params = [attemptId, eventId, version, kind, state, outcome, times.occurredAt, times.knownAt, times.recordedAt, JSON.stringify(details)];
-    // RETURNING reports values before AFTER triggers. The registry schema is
-    // stable after startup; keep the readback for databases with custom triggers.
-    canReturnEvent ??= db.supportsInsertReturning === true && !db.get(`SELECT 1 FROM (
-      SELECT type, tbl_name FROM main.sqlite_schema UNION ALL
-      SELECT type, tbl_name FROM temp.sqlite_schema
-    ) WHERE type = 'trigger' AND tbl_name = 'inferenceAttemptEvents' COLLATE NOCASE LIMIT 1`);
-    if (canReturnEvent) {
-      const row = db.get(`${insert} RETURNING *`, params);
-      requireValue(row, "event_insert_unavailable");
-      return decodeEvent(row);
-    }
     db.run(insert, params);
     return decodeEvent(getEvent(attemptId, eventId));
   }
@@ -301,6 +289,26 @@ export function createAttemptRegistryRepository(db, { now = Date.now, verifyInac
     return change(input, "returned_model", { returnedModel });
   }
 
+  function recordModelAndUsage(input) {
+    fields(input, [...EVENT_FIELDS, "returnedModel", "usageEventId", "usage"]);
+    const { attemptId, eventId, usageEventId, expectedVersion, occurredAt, knownAt } = input;
+    opaqueId(attemptId);
+    opaqueId(eventId);
+    opaqueId(usageEventId);
+    requireValue(eventId !== usageEventId && timestamp(expectedVersion) >= 1);
+    const returnedModel = modelId(input.returnedModel);
+    requireValue(returnedModel !== null);
+    const usage = tokenUsage(input.usage);
+
+    return transact(() => {
+      const modelEvent = apply({ attemptId, eventId, expectedVersion, occurredAt, knownAt }, "returned_model", { returnedModel });
+      requireValue(modelEvent.version === expectedVersion + 1, "version_conflict");
+      const usageEvent = apply({ attemptId, eventId: usageEventId, expectedVersion: modelEvent.version, occurredAt, knownAt }, "usage", usage);
+      requireValue(usageEvent.version === modelEvent.version + 1, "version_conflict");
+      return usageEvent;
+    });
+  }
+
   function finish(input) {
     fields(input, [...EVENT_FIELDS, "state", "outcome", "noSendEvidence"]);
     requireValue(input.noSendEvidence === undefined ||
@@ -387,7 +395,7 @@ export function createAttemptRegistryRepository(db, { now = Date.now, verifyInac
 
   return {
     openEpoch, closeEpoch, markCoverageGap, readCoverage,
-    prepare, markDispatchPossible, acknowledge, markInProgress, observeReturnedModel, recordUsage, finish, recoverOpen,
+    prepare, markDispatchPossible, acknowledge, markInProgress, observeReturnedModel, recordUsage, recordModelAndUsage, finish, recoverOpen,
     captureReadCutoff, readAsKnownAt, linkUsageHistory,
   };
 }

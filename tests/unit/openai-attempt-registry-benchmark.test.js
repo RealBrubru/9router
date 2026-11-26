@@ -7,7 +7,7 @@ import { createBetterSqliteAdapter } from "../../src/lib/db/adapters/betterSqlit
 import initial from "../../src/lib/db/migrations/001-initial.js";
 import { createAttemptProfiler } from "../fixtures/attempt-registry-profiler.mjs";
 
-const fixture = vi.hoisted(() => ({ db: null, fetch: null, profiler: null }));
+const fixture = vi.hoisted(() => ({ db: null, fetch: null, profiler: null, grouped: true }));
 vi.mock("@/lib/db/driver.js", async original => ({
   ...await original(), getAdapter: async () => fixture.db, getAdapterSync: () => fixture.db,
 }));
@@ -16,7 +16,14 @@ vi.mock("@/lib/db/repos/attemptRegistryRepo.js", async original => {
   const actual = await original();
   return { ...actual, createAttemptRegistryRepository(...args) {
     const repo = actual.createAttemptRegistryRepository(...args);
-    return fixture.profiler?.repository(repo) ?? repo;
+    const measured = fixture.profiler?.repository(repo) ?? repo;
+    if (!fixture.grouped) {
+      measured.recordModelAndUsage = ({ returnedModel, usage, usageEventId, ...common }) => {
+        const model = measured.observeReturnedModel({ ...common, returnedModel });
+        return measured.recordUsage({ ...common, eventId: usageEventId, expectedVersion: model.version, usage });
+      };
+    }
+    return measured;
   } };
 });
 
@@ -29,7 +36,8 @@ const retireFlag = "ATTEMPT_REGISTRY_OPENAI_DIRECT";
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const round = value => Number(value.toFixed(3));
 const compare = process.env.RUN_ATTEMPT_PROFILE_COMPARE === "1";
-const profile = compare || process.env.RUN_ATTEMPT_PROFILE === "1";
+const compareTransactions = process.env.RUN_ATTEMPT_TRANSACTION_COMPARE === "1";
+const profile = compareTransactions || compare || process.env.RUN_ATTEMPT_PROFILE === "1";
 
 function percentiles(samples) {
   if (!samples.length) return null;
@@ -104,6 +112,28 @@ function measureDb(db, metrics) {
   };
 }
 
+// Reproduce the historical RETURNING branch on trigger-free benchmark fixtures.
+function experimentalReturning(db) {
+  let inserted;
+  return {
+    ...db,
+    run(sql, params) {
+      if (!sql.startsWith("INSERT INTO inferenceAttemptEvents")) return db.run(sql, params);
+      inserted = db.get(`${sql} RETURNING *`, params);
+      if (!inserted) throw new Error("Missing benchmark event");
+    },
+    get(sql, params) {
+      if (sql === "SELECT * FROM inferenceAttemptEvents WHERE attemptId = ? AND eventId = ?" &&
+          inserted?.attemptId === params[0] && inserted.eventId === params[1]) {
+        const row = inserted;
+        inserted = null;
+        return row;
+      }
+      return db.get(sql, params);
+    },
+  };
+}
+
 async function fileBytes(file) {
   return (await stat(file).catch(error => { if (error.code !== "ENOENT") throw error; }))?.size ?? 0;
 }
@@ -111,11 +141,12 @@ async function fileBytes(file) {
 async function runCell({ post, updateSettings, disablePilot, root, stream, enabled, concurrency, warnings, mode }) {
   const file = join(root, `${stream}-${enabled}-${concurrency}-${mode}.sqlite`);
   const db = createBetterSqliteAdapter(file);
-  if (mode === "readback") db.supportsInsertReturning = false;
+  fixture.grouped = !["readback", "returning", "A", "B"].includes(mode);
   const profiler = profile ? createAttemptProfiler(db) : null;
   fixture.profiler = profiler;
   const sql = { transactions: [], registryStatements: [], errors: 0, busy: 0 };
-  fixture.db = measureDb(profiler?.adapter ?? db, sql);
+  const measuredDb = measureDb(profiler?.adapter ?? db, sql);
+  fixture.db = ["returning", "B", "D"].includes(mode) ? experimentalReturning(measuredDb) : measuredDb;
   const calls = new Map();
   let id = 1000;
   fixture.fetch = (url, options) => {
@@ -176,11 +207,14 @@ async function runCell({ post, updateSettings, disablePilot, root, stream, enabl
     const rssStart = process.memoryUsage.rss();
     let rssPeak = rssStart;
     const samples = [];
+    const roundResults = [];
     let elapsed = 0;
     const rounds = 3;
     const batches = Math.max(2, Math.ceil(120 / concurrency));
     profiler?.startLoad();
     for (let i = 0; i < rounds; i++) {
+      const offset = samples.length;
+      const started = elapsed;
       for (let j = 0; j < batches; j++) {
         const loopProbe = profiler?.probeBatch();
         const result = await batch(concurrency);
@@ -190,6 +224,15 @@ async function runCell({ post, updateSettings, disablePilot, root, stream, enabl
         if (loopProbe) await loopProbe;
       }
       await history(samples.length);
+      if (compareTransactions) {
+        const current = samples.slice(offset);
+        roundResults.push({
+          total: percentiles(current.map(sample => sample.total)),
+          preDispatch: percentiles(current.map(sample => sample.preDispatch)),
+          firstToken: stream ? percentiles(current.map(sample => sample.firstToken)) : null,
+          requestsPerSecond: round(current.length * 1000 / (elapsed - started)),
+        });
+      }
     }
     profiler?.stopLoad();
 
@@ -228,6 +271,7 @@ async function runCell({ post, updateSettings, disablePilot, root, stream, enabl
       sqliteErrors: sql.errors, sqliteBusy: sql.busy, registryWarnings: warnings.count,
       rssStart, rssPeak, dbBytes: await fileBytes(file) - baseDb, walBytes, expected, persisted,
       ...(profiler ? { checkpointMs, profile: profiler.report() } : {}),
+      ...(compareTransactions ? { roundResults } : {}),
     };
   } finally {
     profiler?.stopLoad();
@@ -255,8 +299,17 @@ it.runIf(profile || process.env.RUN_ATTEMPT_BENCH === "1")("compares OpenAI dire
     const { POST: post } = await import("@/app/api/v1/chat/completions/route.js");
     const { beginOpenAiDirectAttempt: disablePilot } = await import("@/lib/quota/openAiDirectAttemptPilot.js");
     for (const stream of [false, true]) {
-      const levels = profile ? [1, 100] : [1, 10, 50, 100];
+      const levels = profile && !compareTransactions ? [1, 100] : [1, 10, 50, 100];
       for (const [index, concurrency] of levels.entries()) {
+        if (compareTransactions) {
+          const orders = ["ABDC", "BCAD", "CDBA", "DACB"];
+          const order = orders[(index + Number(stream) * 2) % orders.length];
+          for (const mode of order) {
+            const result = await runCell({ post, updateSettings, disablePilot, root, stream, enabled: true, concurrency, warnings, mode });
+            log.call(console, "ATTEMPT_BENCH", JSON.stringify(result));
+          }
+          continue;
+        }
         if (compare) {
           const reverse = (index + Number(stream) + Number(process.env.ATTEMPT_COMPARE_REVERSE === "1")) % 2;
           const modes = reverse ? ["returning", "readback"] : ["readback", "returning"];

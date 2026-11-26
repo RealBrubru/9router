@@ -59,9 +59,15 @@ Os testes verificam transações e reabertura. A durabilidade diante de queda de
 
 ### Retorno da linha inserida
 
-O repositório lê a linha de evento diretamente da inserção com `INSERT … RETURNING *` quando o adaptador declara suporte. `better-sqlite3` e `node:sqlite` usam esse caminho pela mesma interface de parâmetros e cache de statements. O SQLite fornece `sequence`, versão, timestamps e demais colunas. A mesma função decodifica a linha nos dois caminhos. A busca de um evento preexistente para idempotência e as verificações de versão e transição continuam na mesma transação.
+Todos os drivers leem o evento após a inserção, na mesma transação. A comparação aprovou o agrupamento com releitura (C). O experimento `RETURNING` permanece no histórico Git em `4a414947`, com a metodologia e os resultados preservados. [Comparação](ATTEMPT-REGISTRY-PROFILING.md#comparação-do-agrupamento-semântico)
 
-`sql.js`, Bun e adaptadores sem suporte declarado usam inserção seguida de leitura. A exportação diferida e a restrição de certificar barreira em `sql.js` permanecem. Na primeira inserção de um repositório, a presença de triggers em `inferenceAttemptEvents` também seleciona a leitura posterior. Com SQLite, alterações de um trigger `AFTER INSERT` podem aparecer apenas nessa leitura. A decisão vale para a vida do repositório e pressupõe schema estável após a inicialização. Mudanças de DDL externas durante a execução exigem reabrir o repositório. [Implementação](../../src/lib/db/repos/attemptRegistryRepo.js) · [Comparação](ATTEMPT-REGISTRY-PROFILING.md#comparação-da-releitura-com-returning)
+### Visibilidade do modelo e do uso
+
+Quando o piloto JSON ou SSE chega à finalização com modelo e uso já disponíveis, grava `returned_model` e `usage` em uma única transação por `recordModelAndUsage`. Os eventos conservam IDs próprios, versões consecutivas, sequência atribuída pelo SQLite e o mesmo instante de observação na finalização. As transições e a validação da versão são executadas para cada evento. Uma falha no segundo evento reverte também o primeiro e as duas atualizações do estado, e Observation indica lacuna sem interromper a resposta. Repetir o comando com as mesmas identidades devolve o mesmo evento de uso.
+
+Um leitor externo que captura um corte de disponibilidade pode ver os dois eventos juntos depois do commit. Desaparece o corte intermediário onde apenas o modelo já estava gravado. O desfecho continua em transação posterior. Um crash entre os dois commits preserva modelo e uso com a tentativa ainda aberta, e a recuperação pode encerrar a tentativa como incerta. Uso recebido durante SSE continua em memória até a fronteira de finalização observada pelo piloto. Evidência tardia continua disponível pelas operações originais. [Teste de crash](../../tests/unit/attempt-registry-crash.test.js)
+
+A preparação ainda antecede o processamento que pode falhar localmente. A barreira continua imediatamente antes da chamada ao transporte e a resposta observada é registrada quando chegam os headers, antes de consumir o corpo que pode trazer o modelo. A separação preserva as evidências pré-envio e de resposta disponíveis mesmo quando o processo cai antes do próximo passo. Cada transação termina antes do código voltar ao transporte ou à leitura do stream.
 
 ## Piloto OpenAI direto
 
