@@ -88,7 +88,15 @@ A nova instância sintética usa volume próprio, rede Docker interna sem saída
 
 Depois de reiniciar a instância sintética, passaram novamente healthcheck, login, autorização, integridade e persistência. A API de conciliação apresentou 163 tokens no histórico e 163 no Registry como valores separados, com um vínculo persistido, 80 tokens no snapshot remoto simulado, `dataAsOf: null`, cobertura local parcial e saldo indicativo nulo. Os endpoints administrativos rejeitaram acesso anônimo e chave de inferência. A rota Chat Completions rejeitou a ausência de chave e devolveu 404 sem conexão ativa para requisições JSON e SSE autenticadas. Os respectivos fluxos de sucesso foram exercitados com transporte simulado na suíte offline.
 
-#### Próxima rodada, mediante autorização
+#### Resultado da homologação real integrada
+
+Na imagem ARM64 acima, as duas chamadas autorizadas com GPT-6 Luna via OpenAI direto, uma JSON e uma SSE com `include_usage`, concluíram com sucesso. O Registry persistiu duas tentativas `closed/completed` com uso `measured/complete` e vínculo `configured`. A tentativa JSON teve seis eventos e a SSE teve sete. O piloto terminou sem retries ou fallbacks. History e Daily registraram duas requisições com os mesmos contadores locais do Registry. Na Reconciliation, Registry e legado aparecem como subtotais separados, sem vínculo explícito com `usageHistory`.
+
+O incremento agregado posterior na Usage API para o modelo e o tier incentivado coincidiu com o consumo das duas chamadas. A correspondência serve como evidência experimental agregada. A inclusão de cada tentativa individual permanece indeterminada. Os coletores apresentaram zero falhas consecutivas na leitura verificada. O custo teórico local foi calculado e o custo efetivo administrativo permaneceu desconhecido. A cobertura local continuou parcial, com `dataAsOf: null` e saldo indicativo nulo. [Escopos da comparação](QUOTA-RECONCILIATION.md#comparação-com-o-resumo-de-modelo)
+
+#### Procedimento para repetir a homologação real
+
+Execute novas chamadas somente após autorização explícita.
 
 1. Use um volume limpo para separar o Analytics da rodada real e preserve o volume sintético para rollback. Na primeira inicialização real, use um nome e uma porta loopback livres, em outra rede dedicada, com um arquivo privado de ambiente que mantenha o coletor e o Registry desligados. Estas variáveis referem-se exclusivamente à nova homologação. `state` aponta para o diretório privado com `tools/provision.mjs`, `env_file` para o arquivo de ambiente da rodada real e `port` para uma porta loopback livre.
 
